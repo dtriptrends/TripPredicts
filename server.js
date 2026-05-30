@@ -54,7 +54,7 @@ async function getPicksFromClaude(searchData) {
       system: `You are a PrizePicks prop analyst. The user gives you sports data and you output ONLY a valid JSON array of picks. No text before or after. Start with [ end with ].`,
       messages: [{
         role: 'user',
-        content: `Here is current sports data pulled right now. Create 6 prop picks using ONLY players from games that have NOT started yet and are still upcoming. Do not include players from games already in progress or finished.
+        content: `Here is current sports data. Create 6 prop picks using ONLY players from games that have NOT started yet and are still upcoming. Do not include any games already in progress or finished. Only pick games with a future start time.
 
 ${searchData}
 
@@ -125,18 +125,18 @@ async function callClaude(messages, system) {
 app.post('/picks', async (req, res) => {
   try {
     const { date } = req.body
-    console.log('Loading picks for:', date)
+    console.log('Loading best slate for:', date)
 
-    console.log('Searching web for picks...')
-    const [mlb, wnba, esports, prizepicks, soccer] = await Promise.all([
-      searchWeb(`MLB games scheduled tonight ${date} start time not started yet player props`),
-      searchWeb(`WNBA games scheduled tonight ${date} start time upcoming player props`),
-      searchWeb(`PrizePicks best picks available right now ${date} upcoming games only`),
-      searchWeb(`esports matches scheduled tonight ${date} CS2 League of Legends upcoming`),
-      searchWeb(`soccer MLS matches scheduled tonight ${date} upcoming kickoff time`)
+    console.log('Searching web for best available picks...')
+    const [s1, s2, s3, s4, s5] = await Promise.all([
+      searchWeb(`PrizePicks best picks available right now upcoming games not started`),
+      searchWeb(`MLB best prop picks upcoming games not started today tomorrow`),
+      searchWeb(`WNBA best prop picks upcoming games not started today tomorrow`),
+      searchWeb(`esports CS2 League of Legends best picks upcoming matches not started`),
+      searchWeb(`PrizePicks top picks best slate available now upcoming only`)
     ])
 
-    const searchData = `MLB UPCOMING GAMES TONIGHT:\n${mlb}\n\nWNBA UPCOMING GAMES TONIGHT:\n${wnba}\n\nPRIZEPICKS TOP PICKS:\n${prizepicks}\n\nESPORTS UPCOMING:\n${esports}\n\nSOCCER UPCOMING:\n${soccer}`
+    const searchData = `PRIZEPICKS BEST PICKS:\n${s1}\n\nMLB UPCOMING ONLY:\n${s2}\n\nWNBA UPCOMING ONLY:\n${s3}\n\nESPORTS UPCOMING:\n${s4}\n\nTOP SLATE:\n${s5}`
 
     console.log('Search done, sending to Claude...')
     const reply = await getPicksFromClaude(searchData)
@@ -166,14 +166,14 @@ app.post('/chat', async (req, res) => {
 
     const lastMsg = messages[messages.length - 1]?.content || ''
     const [search1, search2] = await Promise.all([
-      searchWeb(`PrizePicks props picks available now upcoming games ${lastMsg.substring(0, 50)}`),
-      searchWeb(`sports picks today MLB WNBA esports upcoming games not started`)
+      searchWeb(`PrizePicks best picks available now upcoming games not started ${lastMsg.substring(0, 50)}`),
+      searchWeb(`sports picks best slate MLB WNBA esports upcoming games not started`)
     ])
 
     const messagesWithContext = [...messages]
     messagesWithContext[messagesWithContext.length - 1] = {
       role: 'user',
-      content: `${lastMsg}\n\nCurrent sports data from web right now — upcoming games only:\n${search1}\n\n${search2}`
+      content: `${lastMsg}\n\nCurrent sports data — upcoming games only:\n${search1}\n\n${search2}`
     }
 
     const reply = await callClaude(

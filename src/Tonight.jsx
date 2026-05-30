@@ -7,10 +7,8 @@ export default function Tonight() {
   const [error, setError] = useState(null)
 
   const now = new Date()
-  const hour = now.getHours()
-  const displayDate = hour >= 22 ? new Date(now.getTime() + 24 * 60 * 60 * 1000) : now
-  const dateStr = displayDate.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })
-  const label = hour >= 22 ? `Tomorrow · ${dateStr}` : `${dateStr}`
+const dateStr = now.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })
+const label = dateStr
 
   useEffect(() => {
     const t = setTimeout(() => loadPicks(), 3000)
