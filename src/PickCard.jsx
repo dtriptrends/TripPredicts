@@ -69,11 +69,12 @@ export default function PickCard({ pick, delay = 0 }) {
       <div style={{ padding: '12px 13px 10px' }}>
         <div style={{ fontFamily: "'Barlow Condensed',sans-serif", fontSize: '15px', fontWeight: 700, color: '#eef2ff', letterSpacing: '0.5px', lineHeight: 1.1 }}>{pick.name}</div>
         <div style={{ fontSize: '11px', color: '#7a8aaa', marginTop: '2px' }}>{pick.meta}</div>
-        {pick.time && (
-          <div style={{ fontSize: '10px', color: '#f5c842', marginTop: '3px', marginBottom: '8px', fontFamily: "'Barlow Condensed',sans-serif", fontWeight: 600, letterSpacing: '0.5px' }}>🕐 {pick.time}</div>
-        )}
-        {!pick.time && <div style={{ marginBottom: '11px' }} />}
-
+       {(pick.time || pick.date) && (
+  <div style={{ fontSize: '10px', color: '#f5c842', marginTop: '3px', marginBottom: '8px', fontFamily: "'Barlow Condensed',sans-serif", fontWeight: 600, letterSpacing: '0.5px' }}>
+    🕐 {pick.date ? `${pick.date} · ` : ''}{pick.time || ''}
+  </div>
+)}
+{!pick.time && !pick.date && <div style={{ marginBottom: '11px' }} />}
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '10px' }}>
           <div>
             <div style={{ fontSize: '11px', color: '#7a8aaa' }}>{pick.stat}</div>

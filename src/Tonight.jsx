@@ -9,11 +9,14 @@ export default function Tonight() {
   const now = new Date()
   const hour = now.getHours()
   const tomorrow = new Date(now.getTime() + 24 * 60 * 60 * 1000)
-  const dateStr = now.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })
-  const tomorrowStr = tomorrow.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })
   const isLate = hour >= 22
-  const displayDate = isLate ? tomorrowStr : dateStr
+  const displayDate = isLate
+    ? tomorrow.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })
+    : now.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })
   const pageTitle = isLate ? "TOMORROW'S PICKS" : "TONIGHT'S PICKS"
+
+  const etOptions = { timeZone: 'America/New_York', hour: 'numeric', minute: '2-digit', hour12: true }
+  const currentTime = now.toLocaleTimeString('en-US', etOptions)
 
   useEffect(() => {
     const t = setTimeout(() => loadPicks(), 3000)
@@ -28,7 +31,7 @@ export default function Tonight() {
       const res = await fetch('https://trippredicts-production.up.railway.app/picks', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ date: displayDate })
+        body: JSON.stringify({ date: displayDate, currentTime })
       })
       const data = await res.json()
       if (!data.picks) throw new Error(data.error || 'No picks returned')

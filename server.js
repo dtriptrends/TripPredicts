@@ -36,11 +36,12 @@ function normalizePicks(raw) {
     bull: p.bull || p.reason || p.analysis || p.why || 'Strong pick based on current form.',
     bear: p.bear || p.risk || p.downside || p.concern || 'Variance possible.',
     cats: p.cats || [{ n: p.stat || p.prop_type || 'Points', p: Number(p.conf || p.confidence || 75) }],
-    time: p.time || p.game_time || p.start_time || null
+    time: p.time || p.game_time || p.start_time || null,
+    date: p.date || p.game_date || null
   }))
 }
 
-async function getPicksFromClaude(searchData) {
+async function getPicksFromClaude(searchData, currentTime) {
   const res = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: {
@@ -51,17 +52,28 @@ async function getPicksFromClaude(searchData) {
     body: JSON.stringify({
       model: 'claude-sonnet-4-20250514',
       max_tokens: 4000,
-      system: `You are a PrizePicks prop analyst. The user gives you sports data and you output ONLY a valid JSON array of picks. No text before or after. Start with [ end with ].`,
+      system: `You are a PrizePicks prop analyst. Output ONLY a valid JSON array. No text before or after. Start with [ end with ].`,
       messages: [{
         role: 'user',
-        content: `Here is current sports data. Create 6 prop picks using ONLY players from games that have NOT started yet and are still upcoming. Do not include any games already in progress or finished. Only pick games with a future start time.
+        content: `CURRENT TIME: ${currentTime} ET
+
+Here is current sports data. Create 6 prop picks using ONLY players from games that start AFTER the current time shown above. Any game that starts before or at ${currentTime} ET must be excluded — those games have already started or finished.
 
 ${searchData}
 
 Output ONLY the JSON array starting with [ ending with ] nothing else:
-[{"id":1,"name":"Player Name","meta":"League · Team","stat":"Hits","val":"1.5","dir":"HIGHER","conf":78,"sport":"MLB","initials":"PN","time":"7:05 PM ET","bull":"reason this pick hits","bear":"reason it could miss","cats":[{"n":"Hits","p":78},{"n":"Total Bases","p":71},{"n":"RBI","p":65}]}]
+[{"id":1,"name":"Player Name","meta":"League · Team","stat":"Hits","val":"1.5","dir":"HIGHER","conf":78,"sport":"MLB","initials":"PN","time":"7:05 PM ET","date":"Sat May 30","bull":"reason this pick hits","bear":"reason it could miss","cats":[{"n":"Hits","p":78},{"n":"Total Bases","p":71},{"n":"RBI","p":65}]}]
 
-dir must be HIGHER or LOWER. conf is 50-95. initials is 2 capital letters. time is the game start time in ET. Give exactly 6 picks from upcoming games only. Do not default to HIGHER — analyze carefully and use LOWER when the line is too high. Gold picks should lean LOWER when data supports it. If any pick deserves 90+ confidence mark it as such.`
+Rules:
+- ONLY include games starting AFTER ${currentTime} ET
+- dir must be HIGHER or LOWER
+- conf is 50-95
+- initials is 2 capital letters
+- time is the game start time in ET
+- date is the day of the game like "Sat May 30"
+- Give exactly 6 picks
+- Do not default to HIGHER — use LOWER when line is too high
+- Mark any 90%+ confidence pick accordingly for GOLD status`
       }]
     })
   })
@@ -124,22 +136,21 @@ async function callClaude(messages, system) {
 
 app.post('/picks', async (req, res) => {
   try {
-    const { date } = req.body
-    console.log('Loading best slate for:', date)
+    const { date, currentTime } = req.body
+    console.log('Loading picks. Current time:', currentTime)
 
-    console.log('Searching web for best available picks...')
     const [s1, s2, s3, s4, s5] = await Promise.all([
-      searchWeb(`PrizePicks best picks available right now upcoming games not started`),
-      searchWeb(`MLB best prop picks upcoming games not started today tomorrow`),
-      searchWeb(`WNBA best prop picks upcoming games not started today tomorrow`),
-      searchWeb(`esports CS2 League of Legends best picks upcoming matches not started`),
+      searchWeb(`PrizePicks best picks available upcoming games not started`),
+      searchWeb(`MLB best prop picks upcoming games tomorrow ${date}`),
+      searchWeb(`WNBA best prop picks upcoming games ${date}`),
+      searchWeb(`esports CS2 League of Legends best picks upcoming matches ${date}`),
       searchWeb(`PrizePicks top picks best slate available now upcoming only`)
     ])
 
-    const searchData = `PRIZEPICKS BEST PICKS:\n${s1}\n\nMLB UPCOMING ONLY:\n${s2}\n\nWNBA UPCOMING ONLY:\n${s3}\n\nESPORTS UPCOMING:\n${s4}\n\nTOP SLATE:\n${s5}`
+    const searchData = `PRIZEPICKS BEST PICKS:\n${s1}\n\nMLB UPCOMING:\n${s2}\n\nWNBA UPCOMING:\n${s3}\n\nESPORTS UPCOMING:\n${s4}\n\nTOP SLATE:\n${s5}`
 
-    console.log('Search done, sending to Claude...')
-    const reply = await getPicksFromClaude(searchData)
+    console.log('Search done, sending to Claude with current time filter...')
+    const reply = await getPicksFromClaude(searchData, currentTime)
     console.log('Claude reply:', reply.substring(0, 300))
 
     const start = reply.indexOf('[')
@@ -161,24 +172,24 @@ app.post('/picks', async (req, res) => {
 
 app.post('/chat', async (req, res) => {
   try {
-    const { messages } = req.body
-    console.log('Chat request received')
+    const { messages, currentTime } = req.body
+    console.log('Chat request received, current time:', currentTime)
 
     const lastMsg = messages[messages.length - 1]?.content || ''
     const [search1, search2] = await Promise.all([
-      searchWeb(`PrizePicks best picks available now upcoming games not started ${lastMsg.substring(0, 50)}`),
+      searchWeb(`PrizePicks best picks available now upcoming games not started`),
       searchWeb(`sports picks best slate MLB WNBA esports upcoming games not started`)
     ])
 
     const messagesWithContext = [...messages]
     messagesWithContext[messagesWithContext.length - 1] = {
       role: 'user',
-      content: `${lastMsg}\n\nCurrent sports data — upcoming games only:\n${search1}\n\n${search2}`
+      content: `CURRENT TIME: ${currentTime} ET. Only recommend picks from games starting after this time.\n\n${lastMsg}\n\nCurrent sports data:\n${search1}\n\n${search2}`
     }
 
     const reply = await callClaude(
       messagesWithContext,
-      `You are the Trip Predicts AI analyst — a sharp confident prop pick advisor for PrizePicks and similar platforms. You have been given current web search data to use. Never say you do not have access to live data. Only recommend picks from games that have not started yet. You cover NBA, WNBA, NFL, MLB, NHL, CS2, League of Legends, Valorant, Call of Duty League, and other esports. Confidence tiers: Regular below 75%, High 75-89%, GOLD 90%+ rare and elite. When building lineups select strongest picks mixing sports and esports. Always include esports if confidence is high. Do not default to HIGHER — use LOWER when the line is set too high or player is facing tough matchup. List all picks at once with name stat line direction arrow confidence percent and 1-2 sentence reasoning. Label GOLD picks clearly. Keep responses sharp direct and conversational. Never use em dashes. Bold key info with **text**.`
+      `You are the Trip Predicts AI analyst — a sharp confident prop pick advisor for PrizePicks. Only recommend picks from games that have NOT started yet — always check the current time provided and exclude any games before it. You cover NBA, WNBA, NFL, MLB, NHL, CS2, League of Legends, Valorant, and other esports. Confidence tiers: Regular below 75%, High 75-89%, GOLD 90%+ rare and elite. Mix sports and esports for strongest slate. Do not default to HIGHER — use LOWER when line is too high. Keep responses sharp direct and conversational. Never use em dashes. Bold key info with **text**.`
     )
     res.json({ reply })
   } catch (e) {
