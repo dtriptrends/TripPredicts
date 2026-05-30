@@ -127,14 +127,48 @@ async function getLiveData(date) {
 
 app.post('/picks', async (req, res) => {
   try {
-    const { currentTime } = req.body
-    console.log('Loading picks, current time:', currentTime)
-    const searchData = await getLiveData()
-    const reply = await analyzeWithClaude(searchData, 'all', currentTime)
-    const start = reply.indexOf('[')
-    const end = reply.lastIndexOf(']')
+    const { currentTime, lines } = req.body
+    console.log('Analyzing', lines?.length, 'real PrizePicks lines')
+
+    if (!lines || lines.length === 0) throw new Error('No lines provided')
+
+    const linesText = lines.map(l =>
+      `${l.name} (${l.league} · ${l.team}) | ${l.stat}: ${l.line} | ${l.date} ${l.start_time}`
+    ).join('\n')
+
+    const res2 = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-api-key': API_KEY, 'anthropic-version': '2023-06-01' },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 4000,
+        system: `You are a PrizePicks prop analyst. Output ONLY a valid JSON array. No text before or after. Start with [ end with ].`,
+        messages: [{
+          role: 'user',
+          content: `Current time: ${currentTime} ET
+
+These are REAL live PrizePicks lines pulled directly from their platform right now. Use ONLY these exact player names and exact lines — do not change any numbers:
+
+${linesText}
+
+Select the best 6 picks. Output ONLY this JSON array:
+[{"id":1,"name":"exact player name from above","meta":"League · Team","stat":"exact stat from above","val":"exact line number from above","dir":"HIGHER","conf":88,"sport":"NBA","initials":"PN","time":"exact time from above","date":"exact date from above","bull":"specific reason","bear":"real risk","cats":[{"n":"stat name","p":88}]}]
+
+Rules: Use exact names, stats and line numbers from the data above. dir HIGHER or LOWER based on analysis. conf 50-95. Do not default to HIGHER.`
+        }]
+      })
+    })
+
+    const data = await res2.json()
+    if (!data.content) throw new Error(data.error?.message || 'No content')
+    const textBlock = data.content.find(b => b.type === 'text')
+    if (!textBlock) throw new Error('No response')
+
+    const start = textBlock.text.indexOf('[')
+    const end = textBlock.text.lastIndexOf(']')
     if (start === -1 || end === -1) throw new Error('Please retry in a moment.')
-    const picks = normalizePicks(JSON.parse(reply.slice(start, end + 1)))
+
+    const picks = normalizePicks(JSON.parse(textBlock.text.slice(start, end + 1)))
     console.log('Got', picks.length, 'picks')
     res.json({ picks })
   } catch (e) {
@@ -145,15 +179,45 @@ app.post('/picks', async (req, res) => {
 
 app.post('/gold', async (req, res) => {
   try {
-    const { currentTime } = req.body
-    console.log('Loading gold picks')
-    const searchData = await getLiveData()
-    const reply = await analyzeWithClaude(searchData, 'gold', currentTime)
-    const start = reply.indexOf('[')
-    const end = reply.lastIndexOf(']')
-    if (start === -1 || end === -1) throw new Error('No gold picks found right now.')
-    const picks = normalizePicks(JSON.parse(reply.slice(start, end + 1))).filter(p => p.conf >= 90)
-    console.log('Got', picks.length, 'gold picks')
+    const { currentTime, lines } = req.body
+    console.log('Finding gold from', lines?.length, 'real lines')
+
+    if (!lines || lines.length === 0) throw new Error('No lines provided')
+
+    const linesText = lines.map(l =>
+      `${l.name} (${l.league} · ${l.team}) | ${l.stat}: ${l.line} | ${l.date} ${l.start_time}`
+    ).join('\n')
+
+    const res2 = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-api-key': API_KEY, 'anthropic-version': '2023-06-01' },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 4000,
+        system: `You are a PrizePicks prop analyst. Output ONLY a valid JSON array. No text before or after. Start with [ end with ].`,
+        messages: [{
+          role: 'user',
+          content: `Current time: ${currentTime} ET
+
+These are REAL live PrizePicks lines. Find only the 90%+ confidence picks:
+
+${linesText}
+
+Output ONLY this JSON array with 90%+ confidence picks only:
+[{"id":1,"name":"exact player name","meta":"League · Team","stat":"exact stat","val":"exact line","dir":"HIGHER","conf":92,"sport":"NBA","initials":"PN","time":"exact time","date":"exact date","bull":"reason","bear":"risk","cats":[{"n":"stat","p":92}]}]`
+        }]
+      })
+    })
+
+    const data = await res2.json()
+    const textBlock = data.content?.find(b => b.type === 'text')
+    if (!textBlock) throw new Error('No response')
+
+    const start = textBlock.text.indexOf('[')
+    const end = textBlock.text.lastIndexOf(']')
+    if (start === -1 || end === -1) throw new Error('No gold picks right now.')
+
+    const picks = normalizePicks(JSON.parse(textBlock.text.slice(start, end + 1))).filter(p => p.conf >= 90)
     res.json({ picks })
   } catch (e) {
     console.error('Gold error:', e.message)

@@ -15,7 +15,7 @@ export default function Navbar({ tab, setTab, onAbout }) {
       }}>TRIP PREDICTS</div>
 
       <div style={{ display: 'flex', gap: '2px', background: 'var(--bg3)', borderRadius: '24px', padding: '3px' }}>
-        {['tonight', 'gold', 'chat'].map(t => (
+        {['tonight', 'gold'].map(t => (
           <button key={t} onClick={() => setTab(t)} style={{
             background: tab === t ? 'var(--bg4)' : 'none',
             border: 'none',
@@ -24,7 +24,7 @@ export default function Navbar({ tab, setTab, onAbout }) {
             letterSpacing: '1.5px', textTransform: 'uppercase',
             padding: '5px 16px', borderRadius: '20px', cursor: 'pointer', transition: 'all 0.2s'
           }}>
-            {t === 'tonight' ? 'Tonight' : t === 'gold' ? '★ Gold' : 'AI Chat'}
+            {t === 'tonight' ? 'Tonight' : '★ Gold'}
           </button>
         ))}
       </div>
