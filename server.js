@@ -35,7 +35,8 @@ function normalizePicks(raw) {
     initials: p.initials || (p.name || p.player || 'XX').split(' ').map(w => w[0]).join('').substring(0, 2).toUpperCase(),
     bull: p.bull || p.reason || p.analysis || p.why || 'Strong pick based on current form.',
     bear: p.bear || p.risk || p.downside || p.concern || 'Variance possible.',
-    cats: p.cats || [{ n: p.stat || p.prop_type || 'Points', p: Number(p.conf || p.confidence || 75) }]
+    cats: p.cats || [{ n: p.stat || p.prop_type || 'Points', p: Number(p.conf || p.confidence || 75) }],
+    time: p.time || p.game_time || p.start_time || null
   }))
 }
 
@@ -53,14 +54,14 @@ async function getPicksFromClaude(searchData) {
       system: `You are a PrizePicks prop analyst. The user gives you sports data and you output ONLY a valid JSON array of picks. No text before or after. Start with [ end with ].`,
       messages: [{
         role: 'user',
-        content: `Here is current sports data pulled right now. Create 6 prop picks using ONLY players and props that appear in this data. Prioritize any picks with 90%+ confidence as GOLD tier. Include esports picks if confidence is high. Mix sports for the strongest possible slate.
+        content: `Here is current sports data pulled right now. Create 6 prop picks using ONLY players from games that have NOT started yet and are still upcoming. Do not include players from games already in progress or finished.
 
 ${searchData}
 
 Output ONLY the JSON array starting with [ ending with ] nothing else:
-[{"id":1,"name":"Player Name","meta":"League · Team","stat":"Hits","val":"1.5","dir":"HIGHER","conf":78,"sport":"MLB","initials":"PN","bull":"reason this pick hits","bear":"reason it could miss","cats":[{"n":"Hits","p":78},{"n":"Total Bases","p":71},{"n":"RBI","p":65}]}]
+[{"id":1,"name":"Player Name","meta":"League · Team","stat":"Hits","val":"1.5","dir":"HIGHER","conf":78,"sport":"MLB","initials":"PN","time":"7:05 PM ET","bull":"reason this pick hits","bear":"reason it could miss","cats":[{"n":"Hits","p":78},{"n":"Total Bases","p":71},{"n":"RBI","p":65}]}]
 
-dir must be HIGHER or LOWER. conf is 50-95. initials is 2 capital letters. Give exactly 6 picks. If any pick deserves 90+ confidence mark it accordingly so it shows as GOLD. IMPORTANT: Do not default to HIGHER. Analyze each prop carefully — LOWER picks are often stronger and should be used when the line is set too high, the player is on a back to back, facing tough defense, or has been inconsistent. A balanced slate should have a mix of HIGHER and LOWER picks. Gold picks should lean LOWER when the data supports it.`
+dir must be HIGHER or LOWER. conf is 50-95. initials is 2 capital letters. time is the game start time in ET. Give exactly 6 picks from upcoming games only. Do not default to HIGHER — analyze carefully and use LOWER when the line is too high. Gold picks should lean LOWER when data supports it. If any pick deserves 90+ confidence mark it as such.`
       }]
     })
   })
@@ -128,14 +129,14 @@ app.post('/picks', async (req, res) => {
 
     console.log('Searching web for picks...')
     const [mlb, wnba, esports, prizepicks, soccer] = await Promise.all([
-      searchWeb(`MLB player props available now ${date} over under hits RBI total bases`),
-      searchWeb(`WNBA player props available now ${date} points rebounds assists`),
-      searchWeb(`PrizePicks best picks available right now ${date} high confidence`),
-      searchWeb(`esports PrizePicks props available now ${date} CS2 League of Legends kills assists`),
-      searchWeb(`soccer MLS props available now ${date} PrizePicks shots goals`)
+      searchWeb(`MLB games scheduled tonight ${date} start time not started yet player props`),
+      searchWeb(`WNBA games scheduled tonight ${date} start time upcoming player props`),
+      searchWeb(`PrizePicks best picks available right now ${date} upcoming games only`),
+      searchWeb(`esports matches scheduled tonight ${date} CS2 League of Legends upcoming`),
+      searchWeb(`soccer MLS matches scheduled tonight ${date} upcoming kickoff time`)
     ])
 
-    const searchData = `MLB PROPS AVAILABLE NOW:\n${mlb}\n\nWNBA PROPS AVAILABLE NOW:\n${wnba}\n\nPRIZEPICKS TOP PICKS:\n${prizepicks}\n\nESPORTS PROPS:\n${esports}\n\nSOCCER PROPS:\n${soccer}`
+    const searchData = `MLB UPCOMING GAMES TONIGHT:\n${mlb}\n\nWNBA UPCOMING GAMES TONIGHT:\n${wnba}\n\nPRIZEPICKS TOP PICKS:\n${prizepicks}\n\nESPORTS UPCOMING:\n${esports}\n\nSOCCER UPCOMING:\n${soccer}`
 
     console.log('Search done, sending to Claude...')
     const reply = await getPicksFromClaude(searchData)
@@ -165,19 +166,19 @@ app.post('/chat', async (req, res) => {
 
     const lastMsg = messages[messages.length - 1]?.content || ''
     const [search1, search2] = await Promise.all([
-      searchWeb(`PrizePicks props picks available now ${lastMsg.substring(0, 50)}`),
-      searchWeb(`sports picks today MLB WNBA esports available now`)
+      searchWeb(`PrizePicks props picks available now upcoming games ${lastMsg.substring(0, 50)}`),
+      searchWeb(`sports picks today MLB WNBA esports upcoming games not started`)
     ])
 
     const messagesWithContext = [...messages]
     messagesWithContext[messagesWithContext.length - 1] = {
       role: 'user',
-      content: `${lastMsg}\n\nCurrent sports data from web right now:\n${search1}\n\n${search2}`
+      content: `${lastMsg}\n\nCurrent sports data from web right now — upcoming games only:\n${search1}\n\n${search2}`
     }
 
     const reply = await callClaude(
       messagesWithContext,
-      `You are the Trip Predicts AI analyst — a sharp confident prop pick advisor for PrizePicks and similar platforms. You have been given current web search data to use. Never say you do not have access to live data. You cover NBA, WNBA, NFL, MLB, NHL, CS2, League of Legends, Valorant, Call of Duty League, and other esports. Confidence tiers: Regular below 75%, High 75-89%, GOLD 90%+ rare and elite. When building lineups select strongest picks mixing sports and esports. Always include esports if confidence is high. List all picks at once with name stat line direction arrow confidence percent and 1-2 sentence reasoning. Label GOLD picks clearly. Keep responses sharp direct and conversational. Never use em dashes. Bold key info with **text**.`
+      `You are the Trip Predicts AI analyst — a sharp confident prop pick advisor for PrizePicks and similar platforms. You have been given current web search data to use. Never say you do not have access to live data. Only recommend picks from games that have not started yet. You cover NBA, WNBA, NFL, MLB, NHL, CS2, League of Legends, Valorant, Call of Duty League, and other esports. Confidence tiers: Regular below 75%, High 75-89%, GOLD 90%+ rare and elite. When building lineups select strongest picks mixing sports and esports. Always include esports if confidence is high. Do not default to HIGHER — use LOWER when the line is set too high or player is facing tough matchup. List all picks at once with name stat line direction arrow confidence percent and 1-2 sentence reasoning. Label GOLD picks clearly. Keep responses sharp direct and conversational. Never use em dashes. Bold key info with **text**.`
     )
     res.json({ reply })
   } catch (e) {
