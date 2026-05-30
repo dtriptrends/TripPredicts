@@ -7,8 +7,13 @@ export default function Tonight() {
   const [error, setError] = useState(null)
 
   const now = new Date()
-const dateStr = now.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })
-const label = dateStr
+  const hour = now.getHours()
+  const tomorrow = new Date(now.getTime() + 24 * 60 * 60 * 1000)
+  const dateStr = now.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })
+  const tomorrowStr = tomorrow.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })
+  const isLate = hour >= 22
+  const displayDate = isLate ? tomorrowStr : dateStr
+  const pageTitle = isLate ? "TOMORROW'S PICKS" : "TONIGHT'S PICKS"
 
   useEffect(() => {
     const t = setTimeout(() => loadPicks(), 3000)
@@ -23,7 +28,7 @@ const label = dateStr
       const res = await fetch('https://trippredicts-production.up.railway.app/picks', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ date: dateStr })
+        body: JSON.stringify({ date: displayDate })
       })
       const data = await res.json()
       if (!data.picks) throw new Error(data.error || 'No picks returned')
@@ -41,8 +46,8 @@ const label = dateStr
 
       <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between' }}>
         <div>
-          <div style={{ fontFamily: 'var(--font-d)', fontSize: '32px', letterSpacing: '2px', color: 'var(--text)', lineHeight: 1 }}>TONIGHT'S PICKS</div>
-          <div style={{ fontSize: '12px', color: 'var(--text2)', marginTop: '4px' }}>{label} · Best available across all sports and esports</div>
+          <div style={{ fontFamily: 'var(--font-d)', fontSize: '32px', letterSpacing: '2px', color: 'var(--text)', lineHeight: 1 }}>{pageTitle}</div>
+          <div style={{ fontSize: '12px', color: 'var(--text2)', marginTop: '4px' }}>{displayDate} · Best available across all sports and esports</div>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
           {!loading && (
@@ -60,8 +65,8 @@ const label = dateStr
 
       {loading && (
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '80px 0', gap: '16px' }}>
-          <div style={{ fontFamily: 'var(--font-d)', fontSize: '22px', letterSpacing: '2px', color: 'var(--gold)' }}>SEARCHING UPCOMING SLATE</div>
-          <div style={{ fontSize: '13px', color: 'var(--text2)' }}>Pulling live games and prop lines...</div>
+          <div style={{ fontFamily: 'var(--font-d)', fontSize: '22px', letterSpacing: '2px', color: 'var(--gold)' }}>SEARCHING BEST SLATE</div>
+          <div style={{ fontSize: '13px', color: 'var(--text2)' }}>Pulling upcoming games and prop lines...</div>
           <div style={{ display: 'flex', gap: '8px', marginTop: '8px' }}>
             {[0, 1, 2].map(i => (
               <div key={i} style={{ width: '8px', height: '8px', borderRadius: '50%', background: 'var(--gold)', animation: `dotPulse 1.3s ${i * 0.2}s infinite` }} />
@@ -82,7 +87,7 @@ const label = dateStr
           <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '18px' }}>
             <span style={{ fontSize: '20px' }}>★</span>
             <span style={{ fontFamily: 'var(--font-d)', fontSize: '26px', letterSpacing: '2px', color: 'var(--gold)' }}>GOLD PICKS</span>
-            <span style={{ fontSize: '12px', color: 'var(--text2)', marginLeft: 'auto' }}>90%+ Confidence · Strongest plays tonight</span>
+            <span style={{ fontSize: '12px', color: 'var(--text2)', marginLeft: 'auto' }}>90%+ Confidence · Strongest plays available</span>
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(195px,1fr))', gap: '14px' }}>
             {gold.map((p, i) => <PickCard key={p.id} pick={p} delay={i * 70} />)}
