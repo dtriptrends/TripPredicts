@@ -8,31 +8,83 @@ app.use(express.json())
 const API_KEY = process.env.VITE_ANTHROPIC_API_KEY
 const sleep = ms => new Promise(r => setTimeout(r, ms))
 
-async function getPrizePicksLines() {
+// PrizePicks league IDs
+const LEAGUES = {
+  MLB: 2,
+  NBA: 7,
+  WNBA: 3,
+  NHL: 4,
+  NFL: 9,
+  ESPORTS: 14
+}
+
+async function fetchLeague(leagueId) {
   try {
-    const res = await fetch('https://api.prizepicks.com/projections?league_id=2&per_page=50&single_stat=true', {
-      headers: {
-        'User-Agent': 'Mozilla/5.0',
-        'Accept': 'application/json'
-      }
+    const res = await fetch(`https://api.prizepicks.com/projections?league_id=${leagueId}&per_page=25&single_stat=true`, {
+      headers: { 'User-Agent': 'Mozilla/5.0', 'Accept': 'application/json' }
     })
     const data = await res.json()
-    return data
+    if (!data.data || data.data.length === 0) return []
+
+    const players = {}
+    if (data.included) {
+      data.included.forEach(item => {
+        if (item.type === 'new_player') {
+          players[item.id] = {
+            name: item.attributes.display_name || item.attributes.name,
+            team: item.attributes.team,
+            position: item.attributes.position,
+            image: item.attributes.image_url,
+            league: item.attributes.league
+          }
+        }
+      })
+    }
+
+    return data.data.map(proj => {
+      const playerId = proj.relationships?.new_player?.data?.id
+      const player = players[playerId] || {}
+      return {
+        player_id: playerId,
+        name: player.name || 'Unknown',
+        team: player.team || proj.attributes.description || '',
+        position: player.position || '',
+        image: player.image || null,
+        league: player.league || '',
+        stat: proj.attributes.stat_display_name,
+        line: proj.attributes.line_score,
+        start_time: proj.attributes.start_time,
+        status: proj.attributes.status,
+        game_id: proj.attributes.game_id
+      }
+    }).filter(p => p.status === 'pre_game' && p.name !== 'Unknown')
   } catch (e) {
-    console.log('PrizePicks fetch error:', e.message)
-    return null
+    console.log(`League ${leagueId} fetch error:`, e.message)
+    return []
   }
+}
+
+function formatTime(isoTime) {
+  if (!isoTime) return null
+  const d = new Date(isoTime)
+  return d.toLocaleTimeString('en-US', { timeZone: 'America/New_York', hour: 'numeric', minute: '2-digit', hour12: true }) + ' ET'
+}
+
+function formatDate(isoTime) {
+  if (!isoTime) return null
+  const d = new Date(isoTime)
+  return d.toLocaleDateString('en-US', { timeZone: 'America/New_York', weekday: 'short', month: 'short', day: 'numeric' })
 }
 
 function normalizePicks(raw) {
   return raw.map((p, i) => ({
     id: p.id || i + 1,
-    name: p.name || p.player || 'Unknown Player',
+    name: p.name || 'Unknown Player',
     meta: p.meta || `${p.sport || ''} · ${p.team || ''}`,
-    stat: p.stat || p.prop_type || 'Points',
+    stat: p.stat || 'Points',
     val: String(p.val || p.line || '0'),
     dir: (() => {
-      const d = (p.dir || p.pick || 'HIGHER').toUpperCase()
+      const d = (p.dir || 'HIGHER').toUpperCase()
       if (d.includes('MORE') || d.includes('OVER') || d.includes('HIGHER')) return 'HIGHER'
       if (d.includes('LESS') || d.includes('UNDER') || d.includes('LOWER')) return 'LOWER'
       return 'HIGHER'
@@ -44,11 +96,12 @@ function normalizePicks(raw) {
     bear: p.bear || 'Variance possible.',
     cats: p.cats || [{ n: p.stat || 'Points', p: Number(p.conf || 75) }],
     time: p.time || null,
-    date: p.date || null
+    date: p.date || null,
+    image: p.image || null
   }))
 }
 
-async function analyzeWithClaude(prizePicksData, currentTime, allOrGold) {
+async function analyzeWithClaude(projections, mode) {
   const res = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: {
@@ -59,24 +112,24 @@ async function analyzeWithClaude(prizePicksData, currentTime, allOrGold) {
     body: JSON.stringify({
       model: 'claude-sonnet-4-20250514',
       max_tokens: 4000,
-      system: `You are a PrizePicks prop analyst. Output ONLY a valid JSON array. No text before or after. Start with [ end with ].`,
+      system: `You are a PrizePicks prop analyst. You receive real live prop lines and output ONLY a valid JSON array. No text before or after. Start with [ end with ].`,
       messages: [{
         role: 'user',
-        content: `CURRENT TIME: ${currentTime} ET
+        content: `These are REAL live PrizePicks prop lines available right now. Analyze them and ${mode === 'gold' ? 'find the 3-4 highest confidence picks (90%+)' : 'select the best 6 picks'}.
 
-Here are the ACTUAL live PrizePicks prop lines available right now. These are real lines directly from PrizePicks API:
+${JSON.stringify(projections.slice(0, 80), null, 2)}
 
-${JSON.stringify(prizePicksData, null, 2)}
+Output ONLY this JSON array with nothing else:
+[{"id":1,"name":"Player Name","meta":"League · Team","stat":"Hits","val":"1.5","dir":"LOWER","conf":88,"sport":"MLB","initials":"PN","time":"7:05 PM ET","date":"Sat May 30","bull":"specific reason based on real stats","bear":"real risk factor","cats":[{"n":"Hits","p":88},{"n":"Total Bases","p":75}]}]
 
-${allOrGold === 'gold'
-  ? `From these real lines, find ONLY the 3-4 strongest picks with 90%+ confidence. These are GOLD tier picks only.`
-  : `From these real lines, select the 6 best picks. Include a mix of sports.`
-}
-
-Output ONLY a JSON array with nothing else:
-[{"id":1,"name":"Player Name","meta":"League · Team","stat":"Hits","val":"1.5","dir":"HIGHER","conf":78,"sport":"MLB","initials":"PN","time":"7:05 PM ET","date":"Sat May 30","bull":"reason","bear":"risk","cats":[{"n":"Hits","p":78},{"n":"Total Bases","p":71}]}]
-
-Rules: dir must be HIGHER or LOWER. conf 50-95. initials 2 capital letters. Only use players and lines from the data above. Do not make up lines.`
+Rules:
+- Use ONLY players from the data above with their exact names teams and lines
+- dir must be HIGHER or LOWER — analyze which direction is stronger
+- conf 50-95 based on how strong the pick is
+- initials 2 capital letters
+- time and date from the start_time in the data
+- Do NOT default to HIGHER — use LOWER when the line is set too high
+- ${mode === 'gold' ? 'Only include picks with 90%+ confidence' : 'Give exactly 6 picks'}`
       }]
     })
   })
@@ -90,95 +143,102 @@ Rules: dir must be HIGHER or LOWER. conf 50-95. initials 2 capital letters. Only
 
 async function callClaude(messages, system) {
   let current = [...messages]
-
   for (let i = 0; i < 10; i++) {
     if (i > 0) await sleep(3000)
-
     const res = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': API_KEY,
-        'anthropic-version': '2023-06-01'
-      },
-      body: JSON.stringify({
-        model: 'claude-sonnet-4-20250514',
-        max_tokens: 4000,
-        tools: [{ type: 'web_search_20250305', name: 'web_search' }],
-        system,
-        messages: current
-      })
+      headers: { 'Content-Type': 'application/json', 'x-api-key': API_KEY, 'anthropic-version': '2023-06-01' },
+      body: JSON.stringify({ model: 'claude-sonnet-4-20250514', max_tokens: 4000, tools: [{ type: 'web_search_20250305', name: 'web_search' }], system, messages: current })
     })
-
     const data = await res.json()
     if (!data.content) throw new Error(data.error?.message || 'No content')
-    console.log('Chat turn', i, 'stop_reason:', data.stop_reason)
-
     if (data.stop_reason === 'tool_use') {
       current = [...current, { role: 'assistant', content: data.content }]
-      const toolResults = data.content
-        .filter(b => b.type === 'tool_use')
-        .map(t => ({
-          type: 'tool_result',
-          tool_use_id: t.id,
-          content: `Search done for: ${t.input?.query}`
-        }))
+      const toolResults = data.content.filter(b => b.type === 'tool_use').map(t => ({ type: 'tool_result', tool_use_id: t.id, content: `Search done for: ${t.input?.query}` }))
       current = [...current, { role: 'user', content: toolResults }]
       continue
     }
-
     if (data.stop_reason === 'end_turn') {
       const textBlock = data.content.find(b => b.type === 'text')
       if (textBlock) return textBlock.text
     }
-
-    throw new Error('Unexpected stop: ' + data.stop_reason)
+    throw new Error('Unexpected stop')
   }
   throw new Error('Too many turns')
 }
 
+async function getLiveProjections() {
+  console.log('Fetching live PrizePicks data...')
+  const [mlb, wnba, nba, nhl, esports] = await Promise.all([
+    fetchLeague(LEAGUES.MLB),
+    fetchLeague(LEAGUES.WNBA),
+    fetchLeague(LEAGUES.NBA),
+    fetchLeague(LEAGUES.NHL),
+    fetchLeague(LEAGUES.ESPORTS)
+  ])
+
+  const all = [
+    ...mlb.map(p => ({ ...p, sportLabel: 'MLB' })),
+    ...wnba.map(p => ({ ...p, sportLabel: 'WNBA' })),
+    ...nba.map(p => ({ ...p, sportLabel: 'NBA' })),
+    ...nhl.map(p => ({ ...p, sportLabel: 'NHL' })),
+    ...esports.map(p => ({ ...p, sportLabel: 'Esports' }))
+  ]
+
+  console.log(`Found ${mlb.length} MLB, ${wnba.length} WNBA, ${nba.length} NBA, ${nhl.length} NHL, ${esports.length} Esports projections`)
+  return all
+}
+
 app.post('/picks', async (req, res) => {
   try {
-    const { currentTime } = req.body
-    console.log('Loading picks. Current time:', currentTime)
+    const projections = await getLiveProjections()
+    if (projections.length === 0) throw new Error('No live props found right now. Check back soon.')
 
-    const ppData = await getPrizePicksLines()
-    if (!ppData) throw new Error('Could not fetch PrizePicks data. Please retry.')
+    const formatted = projections.map(p => ({
+      name: p.name,
+      team: p.team,
+      sport: p.sportLabel,
+      stat: p.stat,
+      line: p.line,
+      start_time: formatTime(p.start_time),
+      date: formatDate(p.start_time),
+      image: p.image
+    }))
 
-    console.log('Got PrizePicks data, analyzing...')
-    const reply = await analyzeWithClaude(ppData, currentTime, 'all')
-
+    const reply = await analyzeWithClaude(formatted, 'all')
     const start = reply.indexOf('[')
     const end = reply.lastIndexOf(']')
     if (start === -1 || end === -1) throw new Error('No JSON found. Please retry.')
+
     const raw = JSON.parse(reply.slice(start, end + 1))
+    const imageMap = {}
+    projections.forEach(p => { imageMap[p.name] = p.image })
+    raw.forEach(p => { if (!p.image && imageMap[p.name]) p.image = imageMap[p.name] })
+
     const picks = normalizePicks(raw)
     console.log('Got', picks.length, 'picks')
     res.json({ picks })
   } catch (e) {
     console.error('Picks error:', e.message)
-    if (e.message.includes('rate_limit') || e.message.includes('Too Many') || e.message.includes('credit')) {
-      res.status(500).json({ error: 'Rate limit reached. Please wait 3-5 minutes and tap retry.' })
-    } else {
-      res.status(500).json({ error: e.message })
-    }
+    res.status(500).json({ error: e.message })
   }
 })
 
 app.post('/gold', async (req, res) => {
   try {
-    const { currentTime } = req.body
-    console.log('Loading gold picks. Current time:', currentTime)
+    const projections = await getLiveProjections()
+    if (projections.length === 0) throw new Error('No live props found right now.')
 
-    const ppData = await getPrizePicksLines()
-    if (!ppData) throw new Error('Could not fetch PrizePicks data. Please retry.')
+    const formatted = projections.map(p => ({
+      name: p.name, team: p.team, sport: p.sportLabel, stat: p.stat, line: p.line,
+      start_time: formatTime(p.start_time), date: formatDate(p.start_time)
+    }))
 
-    console.log('Got PrizePicks data, finding gold picks...')
-    const reply = await analyzeWithClaude(ppData, currentTime, 'gold')
-
+    const reply = await analyzeWithClaude(formatted, 'gold')
     const start = reply.indexOf('[')
     const end = reply.lastIndexOf(']')
-    if (start === -1 || end === -1) throw new Error('No gold picks found right now. Try again later.')
+    if (start === -1 || end === -1) throw new Error('No gold picks found right now.')
+
     const raw = JSON.parse(reply.slice(start, end + 1))
     const picks = normalizePicks(raw).filter(p => p.conf >= 90)
     console.log('Got', picks.length, 'gold picks')
@@ -192,27 +252,24 @@ app.post('/gold', async (req, res) => {
 app.post('/chat', async (req, res) => {
   try {
     const { messages, currentTime } = req.body
-    console.log('Chat request received')
+    const projections = await getLiveProjections()
+    const liveData = projections.slice(0, 30).map(p => `${p.name} (${p.sportLabel} · ${p.team}) ${p.stat} ${p.line} - ${formatTime(p.start_time)}`).join('\n')
 
     const lastMsg = messages[messages.length - 1]?.content || ''
     const messagesWithContext = [...messages]
     messagesWithContext[messagesWithContext.length - 1] = {
       role: 'user',
-      content: `CURRENT TIME: ${currentTime} ET. Only recommend picks from games starting after this time.\n\n${lastMsg}`
+      content: `${lastMsg}\n\nCurrent time: ${currentTime} ET\n\nLive PrizePicks props available right now:\n${liveData}`
     }
 
     const reply = await callClaude(
       messagesWithContext,
-      `You are the Trip Predicts AI analyst — a sharp confident prop pick advisor for PrizePicks. Only recommend picks from games that have NOT started yet. You cover NBA, WNBA, NFL, MLB, NHL, CS2, League of Legends, Valorant, and other esports. Confidence tiers: Regular below 75%, High 75-89%, GOLD 90%+ rare and elite. Mix sports and esports. Do not default to HIGHER — use LOWER when line is too high. Keep responses sharp direct and conversational. Never use em dashes. Bold key info with **text**.`
+      `You are the Trip Predicts AI analyst — sharp and confident. You have been given real live PrizePicks prop lines. Use them to make picks. Never say you lack data. You cover MLB, WNBA, NBA, NHL, and esports. Confidence tiers: Regular below 75%, High 75-89%, GOLD 90%+ rare. Mix sports for best slate. Do not default to HIGHER — use LOWER when line is too high. Keep responses sharp and direct. Never use em dashes. Bold key info with **text**.`
     )
     res.json({ reply })
   } catch (e) {
     console.error('Chat error:', e.message)
-    if (e.message.includes('rate_limit') || e.message.includes('Too Many') || e.message.includes('credit')) {
-      res.status(500).json({ error: 'Rate limit reached. Please wait 3-5 minutes and try again.' })
-    } else {
-      res.status(500).json({ error: e.message })
-    }
+    res.status(500).json({ error: e.message })
   }
 })
 
