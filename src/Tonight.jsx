@@ -8,7 +8,7 @@ async function fetchPrizePicksLines() {
   const results = []
   await Promise.all(LEAGUE_IDS.map(async (id) => {
     try {
-      const res = await fetch(`/api/prizepicks?leagueId=${id}`)
+      const res = await fetch(`https://trippredicts-production.up.railway.app/prizepicks/${id}`)
       const data = await res.json()
       if (!data.data || !data.included) return
       const players = {}
