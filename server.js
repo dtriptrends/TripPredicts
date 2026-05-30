@@ -60,7 +60,7 @@ ${searchData}
 Output ONLY the JSON array starting with [ ending with ] nothing else:
 [{"id":1,"name":"Player Name","meta":"League · Team","stat":"Hits","val":"1.5","dir":"HIGHER","conf":78,"sport":"MLB","initials":"PN","bull":"reason this pick hits","bear":"reason it could miss","cats":[{"n":"Hits","p":78},{"n":"Total Bases","p":71},{"n":"RBI","p":65}]}]
 
-dir must be HIGHER or LOWER. conf is 50-95. initials is 2 capital letters. Give exactly 6 picks. If any pick deserves 90+ confidence mark it accordingly so it shows as GOLD.`
+dir must be HIGHER or LOWER. conf is 50-95. initials is 2 capital letters. Give exactly 6 picks. If any pick deserves 90+ confidence mark it accordingly so it shows as GOLD. IMPORTANT: Do not default to HIGHER. Analyze each prop carefully — LOWER picks are often stronger and should be used when the line is set too high, the player is on a back to back, facing tough defense, or has been inconsistent. A balanced slate should have a mix of HIGHER and LOWER picks. Gold picks should lean LOWER when the data supports it.`
       }]
     })
   })
