@@ -2,6 +2,7 @@ import React, { useState } from 'react'
 import Splash from './Splash'
 import Navbar from './Navbar'
 import Tonight from './Tonight'
+import Gold from './Gold'
 import Chat from './Chat'
 import About from './About'
 
@@ -17,6 +18,7 @@ export default function App() {
       <Navbar tab={tab} setTab={setTab} onAbout={() => setShowAbout(true)} />
       <div style={{ flex: 1, overflow: 'hidden', display: 'flex' }}>
         {tab === 'tonight' && <Tonight />}
+        {tab === 'gold' && <Gold />}
         {tab === 'chat' && <Chat />}
       </div>
       <footer style={{
