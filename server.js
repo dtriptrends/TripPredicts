@@ -57,7 +57,14 @@ async function fetchLeague(leagueId) {
         status: proj.attributes.status,
         game_id: proj.attributes.game_id
       }
-    }).filter(p => p.status === 'pre_game' && p.name !== 'Unknown')
+    }).filter(p => {
+  if (p.status !== 'pre_game' || p.name === 'Unknown') return false
+  if (!p.start_time) return false
+  const gameTime = new Date(p.start_time)
+  const now = new Date()
+  const hoursUntilGame = (gameTime - now) / (1000 * 60 * 60)
+  return hoursUntilGame >= -1 && hoursUntilGame <= 36
+})
   } catch (e) {
     console.log(`League ${leagueId} fetch error:`, e.message)
     return []
