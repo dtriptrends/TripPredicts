@@ -8,7 +8,7 @@ async function fetchPrizePicksLines() {
   const results = []
   await Promise.all(LEAGUE_IDS.map(async (id) => {
     try {
-      const res = await fetch(`${SERVER}/prizepicks/${id}`)
+      const res = await fetch(`https://corsproxy.io/?https://api.prizepicks.com/projections?league_id=${id}&per_page=50&single_stat=true`)
       const data = await res.json()
       if (!data.data || !data.included) return
       const players = {}
