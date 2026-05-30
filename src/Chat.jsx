@@ -35,7 +35,7 @@ export default function Chat() {
     historyRef.current = [...historyRef.current, { role: 'user', content: text }]
 
     try {
-      const res = await fetch('http://localhost:3001/chat', {
+      const res = await fetch('https://trippredicts-production.up.railway.app/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ messages: historyRef.current })

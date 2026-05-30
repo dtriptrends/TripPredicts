@@ -18,7 +18,7 @@ export default function Tonight() {
     setError(null)
     setPicks([])
     try {
-      const res = await fetch('http://localhost:3001/picks', {
+      const res = await fetch('https://trippredicts-production.up.railway.app/picks', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ date: dateStr })
