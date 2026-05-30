@@ -5,13 +5,17 @@ export default function Tonight() {
   const [picks, setPicks] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
+
   const now = new Date()
-  const dateStr = now.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })
+  const hour = now.getHours()
+  const displayDate = hour >= 22 ? new Date(now.getTime() + 24 * 60 * 60 * 1000) : now
+  const dateStr = displayDate.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })
+  const label = hour >= 22 ? `Tomorrow · ${dateStr}` : `${dateStr}`
 
   useEffect(() => {
-  const t = setTimeout(() => loadPicks(), 3000)
-  return () => clearTimeout(t)
-}, [])
+    const t = setTimeout(() => loadPicks(), 3000)
+    return () => clearTimeout(t)
+  }, [])
 
   async function loadPicks() {
     setLoading(true)
@@ -24,7 +28,7 @@ export default function Tonight() {
         body: JSON.stringify({ date: dateStr })
       })
       const data = await res.json()
-      if (!data.picks) throw new Error('No picks')
+      if (!data.picks) throw new Error(data.error || 'No picks returned')
       setPicks(data.picks)
     } catch (e) {
       setError(e.message || 'Could not load picks. Tap retry to try again.')
@@ -40,7 +44,7 @@ export default function Tonight() {
       <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between' }}>
         <div>
           <div style={{ fontFamily: 'var(--font-d)', fontSize: '32px', letterSpacing: '2px', color: 'var(--text)', lineHeight: 1 }}>TONIGHT'S PICKS</div>
-          <div style={{ fontSize: '12px', color: 'var(--text2)', marginTop: '4px' }}>{dateStr} · Best available across all sports and esports</div>
+          <div style={{ fontSize: '12px', color: 'var(--text2)', marginTop: '4px' }}>{label} · Best available across all sports and esports</div>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
           {!loading && (
@@ -58,7 +62,7 @@ export default function Tonight() {
 
       {loading && (
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '80px 0', gap: '16px' }}>
-          <div style={{ fontFamily: 'var(--font-d)', fontSize: '22px', letterSpacing: '2px', color: 'var(--gold)' }}>SEARCHING TONIGHT'S SLATE</div>
+          <div style={{ fontFamily: 'var(--font-d)', fontSize: '22px', letterSpacing: '2px', color: 'var(--gold)' }}>SEARCHING UPCOMING SLATE</div>
           <div style={{ fontSize: '13px', color: 'var(--text2)' }}>Pulling live games and prop lines...</div>
           <div style={{ display: 'flex', gap: '8px', marginTop: '8px' }}>
             {[0, 1, 2].map(i => (
@@ -70,7 +74,7 @@ export default function Tonight() {
 
       {error && !loading && (
         <div style={{ textAlign: 'center', padding: '80px 0' }}>
-          <div style={{ fontSize: '14px', color: 'var(--text2)', marginBottom: '16px', textAlign: 'center', lineHeight: 1.6 }}>{error}</div>
+          <div style={{ fontSize: '14px', color: 'var(--text2)', marginBottom: '16px', lineHeight: 1.6 }}>{error}</div>
           <button onClick={loadPicks} style={{ background: 'var(--accent2)', border: 'none', color: '#fff', fontFamily: 'var(--font)', fontSize: '13px', padding: '10px 24px', borderRadius: '10px', cursor: 'pointer' }}>Retry</button>
         </div>
       )}
