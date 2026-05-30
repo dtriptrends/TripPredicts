@@ -2,19 +2,15 @@ import React, { useEffect, useState } from 'react'
 import PickCard from './PickCard'
 
 const SERVER = 'https://trippredicts-production.up.railway.app'
-
-const LEAGUE_IDS = [2, 3, 7, 4, 14] // MLB, WNBA, NBA, NHL, Esports
+const LEAGUE_IDS = [2, 3, 7, 4, 14]
 
 async function fetchPrizePicksLines() {
   const results = []
   await Promise.all(LEAGUE_IDS.map(async (id) => {
     try {
-      const res = await fetch(`https://api.prizepicks.com/projections?league_id=${id}&per_page=50&single_stat=true`, {
-        headers: { 'Accept': 'application/json' }
-      })
+      const res = await fetch(`${SERVER}/prizepicks/${id}`)
       const data = await res.json()
       if (!data.data || !data.included) return
-
       const players = {}
       data.included.forEach(item => {
         if (item.type === 'new_player') {
@@ -26,18 +22,15 @@ async function fetchPrizePicksLines() {
           }
         }
       })
-
       const now = new Date()
       data.data.forEach(proj => {
         const startTime = new Date(proj.attributes.start_time)
         const hoursUntil = (startTime - now) / (1000 * 60 * 60)
         if (proj.attributes.status !== 'pre_game') return
         if (hoursUntil < -1 || hoursUntil > 36) return
-
         const playerId = proj.relationships?.new_player?.data?.id
         const player = players[playerId]
         if (!player || !player.name) return
-
         results.push({
           name: player.name,
           team: player.team,
@@ -70,8 +63,7 @@ export default function Tonight() {
     ? tomorrow.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })
     : now.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })
   const pageTitle = isLate ? "TOMORROW'S PICKS" : "TONIGHT'S PICKS"
-  const etOptions = { timeZone: 'America/New_York', hour: 'numeric', minute: '2-digit', hour12: true }
-  const currentTime = now.toLocaleTimeString('en-US', etOptions)
+  const currentTime = now.toLocaleTimeString('en-US', { timeZone: 'America/New_York', hour: 'numeric', minute: '2-digit', hour12: true })
 
   useEffect(() => {
     const t = setTimeout(() => loadPicks(), 2000)
@@ -83,11 +75,8 @@ export default function Tonight() {
     setError(null)
     setPicks([])
     try {
-      console.log('Fetching real PrizePicks lines...')
       const lines = await fetchPrizePicksLines()
       setLiveCount(lines.length)
-      console.log('Got', lines.length, 'live lines from PrizePicks')
-
       if (lines.length === 0) throw new Error('No live props on PrizePicks right now. Check back soon.')
 
       const res = await fetch(`${SERVER}/picks`, {
@@ -117,7 +106,7 @@ export default function Tonight() {
         <div>
           <div style={{ fontFamily: 'var(--font-d)', fontSize: '32px', letterSpacing: '2px', color: 'var(--text)', lineHeight: 1 }}>{pageTitle}</div>
           <div style={{ fontSize: '12px', color: 'var(--text2)', marginTop: '4px' }}>
-            {displayDate} · {liveCount > 0 ? `${liveCount} live props found` : 'Best available across all sports and esports'}
+            {displayDate} · {liveCount > 0 ? `${liveCount} live props from PrizePicks` : 'Best available across all sports and esports'}
           </div>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>

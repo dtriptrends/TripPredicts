@@ -8,9 +8,7 @@ async function fetchPrizePicksLines() {
   const results = []
   await Promise.all(LEAGUE_IDS.map(async (id) => {
     try {
-      const res = await fetch(`https://api.prizepicks.com/projections?league_id=${id}&per_page=50&single_stat=true`, {
-        headers: { 'Accept': 'application/json' }
-      })
+      const res = await fetch(`${SERVER}/prizepicks/${id}`)
       const data = await res.json()
       if (!data.data || !data.included) return
       const players = {}
@@ -57,8 +55,7 @@ export default function Gold() {
   const [error, setError] = useState(null)
 
   const now = new Date()
-  const etOptions = { timeZone: 'America/New_York', hour: 'numeric', minute: '2-digit', hour12: true }
-  const currentTime = now.toLocaleTimeString('en-US', etOptions)
+  const currentTime = now.toLocaleTimeString('en-US', { timeZone: 'America/New_York', hour: 'numeric', minute: '2-digit', hour12: true })
 
   useEffect(() => {
     const t = setTimeout(() => loadPicks(), 2000)
