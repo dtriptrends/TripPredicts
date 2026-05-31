@@ -1,14 +1,14 @@
 import React, { useEffect, useState } from 'react'
 import PickCard from './PickCard'
 
-const SERVER = 'https://trippredicts-production.up.railway.app'
+const SERVER = 'https://trippredicts-production-cfad.up.railway.app'
 const LEAGUE_IDS = [2, 3, 7, 4, 14]
 
 async function fetchPrizePicksLines() {
   const results = []
   await Promise.all(LEAGUE_IDS.map(async (id) => {
     try {
-      const res = await fetch(`/api/prizepicks?leagueId=${id}`)
+      const res = await fetch(`${SERVER}/prizepicks/${id}`)
       const data = await res.json()
       if (!data.data || !data.included) return
       const players = {}

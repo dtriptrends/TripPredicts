@@ -1,5 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react'
 
+const SERVER = 'https://trippredicts-production-cfad.up.railway.app'
+
 export default function Chat() {
   const [messages, setMessages] = useState([])
   const [input, setInput] = useState('')
@@ -35,7 +37,7 @@ export default function Chat() {
     historyRef.current = [...historyRef.current, { role: 'user', content: text }]
 
     try {
-      const res = await fetch('https://trippredicts-production.up.railway.app/chat', {
+      const res = await fetch(`${SERVER}/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ messages: historyRef.current })
