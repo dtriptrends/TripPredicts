@@ -9,6 +9,9 @@ app.use(express.json({ limit: '10mb' }))
 const API_KEY = process.env.VITE_ANTHROPIC_API_KEY
 const sleep = ms => new Promise(r => setTimeout(r, ms))
 
+let ppCache = { data: null, ts: 0 }
+const CACHE_TTL = 5 * 60 * 1000
+
 function normalizePicks(raw) {
   return raw.map((p, i) => ({
     id: p.id || i + 1,
@@ -35,11 +38,18 @@ function normalizePicks(raw) {
 
 app.get('/prizepicks/all', async (req, res) => {
   try {
+    const now = Date.now()
+    if (ppCache.data && now - ppCache.ts < CACHE_TTL) {
+      console.log('Serving PrizePicks from cache')
+      return res.json(ppCache.data)
+    }
     const target = encodeURIComponent(`https://api.prizepicks.com/projections?per_page=250&single_stat=true`)
     const response = await fetch(`https://api.scraperapi.com?api_key=${process.env.SCRAPER_API_KEY}&url=${target}`)
     const data = await response.json()
+    ppCache = { data, ts: now }
     res.json(data)
   } catch (e) {
+    if (ppCache.data) return res.json(ppCache.data)
     res.status(500).json({ error: e.message })
   }
 })
