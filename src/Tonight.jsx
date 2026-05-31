@@ -3,47 +3,45 @@ import PickCard from './PickCard'
 
 const SERVER = 'https://trippredicts-production-cfad.up.railway.app'
 
-const SESSION_SETS = [
-  {
-    steps: [
-      { label: 'CONNECTING', sub: 'Trip Predicts runs on a live backend refreshed every 5 minutes' },
-      { label: 'LIVE LINES', sub: 'Scanning over 250 real props across all sports right now' },
-      { label: 'AI ANALYSIS', sub: 'Claude weighs recent form, matchups and usage rates for each line' },
-      { label: 'YOUR SLATE', sub: 'Picks spread across at least 3 leagues for maximum value' },
-    ]
-  },
-  {
-    steps: [
-      { label: 'STARTING ENGINE', sub: 'AI-powered prop analysis built for serious bettors' },
-      { label: '250+ PROPS', sub: 'Every league on PrizePicks checked — NBA, MLB, esports and more' },
-      { label: 'CONFIDENCE CHECK', sub: 'Gold picks need 90%+ confidence. No exceptions.' },
-      { label: 'LOCKING PLAYS', sub: 'Never more than 2 picks from the same league. Always balanced.' },
-    ]
-  },
-  {
-    steps: [
-      { label: 'LIVE BOARD', sub: 'Lines pulled fresh so you always see current numbers' },
-      { label: 'PROJECTIONS', sub: 'Only pre-game props within 36 hours are shown' },
-      { label: 'FINDING EDGES', sub: 'Sharp plays come from hot streaks, weak opponents and high usage' },
-      { label: 'BUILDING LINEUP', sub: 'Bull and bear case included so you know the risk before playing' },
-    ]
-  },
-  {
-    steps: [
-      { label: 'FIRING UP', sub: 'Trip Predicts gives everyday bettors a real analytical edge' },
-      { label: 'REAL-TIME DATA', sub: 'PrizePicks lines fetched directly — nothing stale' },
-      { label: 'MATCHUP DATA', sub: 'Direction set by data — HIGHER or LOWER, never a default' },
-      { label: 'DROPPING PICKS', sub: 'Hit refresh any time to get a fresh set of AI-selected plays' },
-    ]
-  },
-  {
-    steps: [
-      { label: 'SCANNING', sub: 'Over 250 props analyzed every single time you load' },
-      { label: 'LOADING LINES', sub: 'NBA, MLB, NHL, NFL, CS2, LoL, Valorant — all in one place' },
-      { label: 'FORM AND USAGE', sub: 'High usage players hit volume-based lines more often' },
-      { label: 'FINALIZING', sub: 'Stat category breakdown shown for every pick so you can judge' },
-    ]
-  },
+const STEP_LABELS = [
+  ['CONNECTING', 'LIVE LINES', 'AI ANALYSIS', 'YOUR SLATE'],
+  ['STARTING UP', 'FETCHING PROPS', 'RUNNING MODELS', 'LOCKING PLAYS'],
+  ['GOING LIVE', 'LOADING BOARD', 'FINDING EDGES', 'BUILDING SLATE'],
+  ['FIRING UP', 'REAL-TIME DATA', 'MATCHUP CHECK', 'DROPPING PICKS'],
+  ['BOOTING', 'SCANNING LINES', 'WEIGHING FORM', 'FINALIZING'],
+]
+
+const FACTS = [
+  'Trip Predicts pulls live lines directly from PrizePicks every time you load.',
+  'Gold picks require 90% confidence or higher. Most sessions only have 1 or 2.',
+  'Every pick shows a bull case and a bear case so you know the risk upfront.',
+  'The AI never defaults to HIGHER. Direction is set by the data.',
+  'Picks are spread across at least 3 different leagues every slate.',
+  'No more than 2 picks from the same league in a single set.',
+  'Trip Predicts covers NBA, MLB, NHL, NFL, CS2, LoL, Valorant and more.',
+  'Over 250 live props are scanned every single time you hit load.',
+  'Recent form is weighted more heavily than season averages for prop bets.',
+  'High usage players hit volume-based lines more consistently over time.',
+  'A weak opponent matchup is one of the strongest signals for a prop to hit.',
+  'The confidence score runs from 50 to 95. Gold means 90 or above.',
+  'Stat category breakdown is shown on every card so you can make your own call.',
+  'Lines are filtered to only show pre-game props starting within 36 hours.',
+  'The AI weighs pace of play, usage rate, recent form and matchup strength.',
+  'Trip Predicts was built to give everyday bettors a real analytical edge.',
+  'You can hit Refresh at any time to pull a fresh set of AI-selected plays.',
+  'The backend caches PrizePicks data every 5 minutes for faster load times.',
+  'Esports props are included — CS2, LoL and Valorant all have strong lines.',
+  'HIGHER or LOWER is never a guess. The model picks a direction based on stats.',
+  'Gold picks are rare. When they show up, they carry real conviction behind them.',
+  'Each card has a TRIP PREDICTS watermark so your screenshots carry the brand.',
+  'The AI looks for hot streaks first. A player in form is the best edge available.',
+  'Props are only shown if they are pre-game. No in-play or already started lines.',
+  'Trip Predicts is free to use. No account needed. Just open and get your picks.',
+  'The confidence bar fills up live when each card loads. Watch it climb.',
+  'Bull case tells you why the pick hits. Bear case tells you why it might not.',
+  'A balanced slate beats a single-sport parlay almost every time.',
+  'The AI scans all available leagues simultaneously to find the best plays.',
+  'Trip Predicts is powered by Claude, one of the most advanced AI models available.',
 ]
 
 async function fetchPrizePicksLines() {
@@ -89,6 +87,15 @@ async function fetchPrizePicksLines() {
   return results
 }
 
+function shuffle(arr) {
+  const a = [...arr]
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]]
+  }
+  return a
+}
+
 export default function Tonight() {
   const [picks, setPicks] = useState([])
   const [loading, setLoading] = useState(true)
@@ -96,7 +103,10 @@ export default function Tonight() {
   const [liveCount, setLiveCount] = useState(0)
   const [progress, setProgress] = useState(0)
   const [stepIdx, setStepIdx] = useState(0)
-  const [sessionSet, setSessionSet] = useState(SESSION_SETS[0])
+  const [stepLabels, setStepLabels] = useState(STEP_LABELS[0])
+  const [facts, setFacts] = useState(FACTS)
+  const [factIdx, setFactIdx] = useState(0)
+  const [factVisible, setFactVisible] = useState(true)
 
   const now = new Date()
   const hour = now.getHours()
@@ -113,14 +123,30 @@ export default function Tonight() {
     return () => clearTimeout(t)
   }, [])
 
+  useEffect(() => {
+    if (!loading) return
+    const interval = setInterval(() => {
+      setFactVisible(false)
+      setTimeout(() => {
+        setFactIdx(i => (i + 1) % facts.length)
+        setFactVisible(true)
+      }, 300)
+    }, 3000)
+    return () => clearInterval(interval)
+  }, [loading, facts])
+
   async function loadPicks() {
-    const newSet = SESSION_SETS[Math.floor(Math.random() * SESSION_SETS.length)]
-    setSessionSet(newSet)
+    const labels = STEP_LABELS[Math.floor(Math.random() * STEP_LABELS.length)]
+    const shuffledFacts = shuffle(FACTS)
+    setStepLabels(labels)
+    setFacts(shuffledFacts)
     setLoading(true)
     setError(null)
     setPicks([])
     setProgress(0)
     setStepIdx(0)
+    setFactIdx(0)
+    setFactVisible(true)
 
     await new Promise(r => setTimeout(r, 300))
     setProgress(15)
@@ -164,7 +190,6 @@ export default function Tonight() {
   }
 
   const gold = picks.filter(p => p.conf >= 90)
-  const currentStep = sessionSet.steps[stepIdx] || sessionSet.steps[0]
 
   return (
     <div style={{ width: '100%', height: '100%', overflowY: 'auto', padding: '24px', display: 'flex', flexDirection: 'column', gap: '24px' }}>
@@ -215,7 +240,7 @@ export default function Tonight() {
 
           <div style={{ width: '100%', maxWidth: '340px' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
-              <div style={{ fontFamily: 'var(--font-d)', fontSize: '18px', letterSpacing: '2px', color: 'var(--gold)' }}>{currentStep.label}</div>
+              <div style={{ fontFamily: 'var(--font-d)', fontSize: '18px', letterSpacing: '2px', color: 'var(--gold)' }}>{stepLabels[stepIdx] || stepLabels[0]}</div>
               <div style={{ fontFamily: 'var(--font-c)', fontSize: '16px', fontWeight: 700, color: 'var(--text2)' }}>{progress}%</div>
             </div>
             <div style={{ height: '6px', background: 'var(--bg3)', borderRadius: '3px', overflow: 'hidden', border: '1px solid var(--border)' }}>
@@ -227,8 +252,13 @@ export default function Tonight() {
                 transition: 'width 0.9s cubic-bezier(0.16,1,0.3,1)'
               }} />
             </div>
-            <div style={{ fontSize: '13px', color: 'var(--text2)', marginTop: '14px', lineHeight: 1.65, textAlign: 'center' }}>
-              {currentStep.sub}
+            <div style={{
+              fontSize: '13px', color: 'var(--text2)', marginTop: '18px',
+              lineHeight: 1.7, textAlign: 'center', minHeight: '44px',
+              opacity: factVisible ? 1 : 0,
+              transition: 'opacity 0.3s ease'
+            }}>
+              {facts[factIdx]}
             </div>
           </div>
         </div>

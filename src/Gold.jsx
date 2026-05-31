@@ -3,47 +3,45 @@ import PickCard from './PickCard'
 
 const SERVER = 'https://trippredicts-production-cfad.up.railway.app'
 
-const GOLD_SESSION_SETS = [
-  {
-    steps: [
-      { label: 'CONNECTING', sub: 'Gold picks are the rarest plays on the board — 90%+ confidence only' },
-      { label: 'SCANNING LINES', sub: 'Checking every live prop across all sports for elite setups' },
-      { label: 'GOLD FILTER', sub: 'Most props get cut here. The bar is high for a reason.' },
-      { label: 'VERIFYING EDGE', sub: 'Every gold pick needs a clear statistical reason to hit' },
-    ]
-  },
-  {
-    steps: [
-      { label: 'STARTING SCAN', sub: 'Not every session has gold picks. Quality over quantity.' },
-      { label: 'LIVE PROPS', sub: 'Pulling 250+ lines to find the few that truly stand out' },
-      { label: 'CONFIDENCE CHECK', sub: 'AI scores every line 50 to 95. Gold means 90 or higher.' },
-      { label: 'ELITE PLAYS', sub: 'When gold picks hit they hit with high conviction' },
-    ]
-  },
-  {
-    steps: [
-      { label: 'GOING LIVE', sub: 'Gold picks refresh with real data every time you load' },
-      { label: 'FULL SCAN', sub: 'NBA, MLB, NHL, NFL, esports — no league gets skipped' },
-      { label: 'HUNTING EDGES', sub: 'Hot streaks plus weak opponents plus high usage equals gold' },
-      { label: 'FINAL CUT', sub: 'Only picks that survive all criteria make the gold board' },
-    ]
-  },
-  {
-    steps: [
-      { label: 'POWERING UP', sub: 'Gold picks are shown separately because they deserve attention' },
-      { label: 'REAL-TIME LINES', sub: 'Stale data misses line moves. We always fetch fresh.' },
-      { label: 'DEEP ANALYSIS', sub: 'Bull case, bear case and stat breakdown on every card' },
-      { label: 'LOCKING GOLD', sub: 'If the confidence is not there, no pick is made. Period.' },
-    ]
-  },
-  {
-    steps: [
-      { label: 'BOOTING SCAN', sub: 'Over 250 props evaluated to find the top 90%+ plays' },
-      { label: 'LOADING DATA', sub: 'PrizePicks lines pulled directly — nothing fabricated' },
-      { label: 'WEIGHING FORM', sub: 'Recent form matters more than season averages for props' },
-      { label: 'GOLD BOARD', sub: 'Rare but powerful. These are the plays worth sizing up.' },
-    ]
-  },
+const STEP_LABELS = [
+  ['CONNECTING', 'SCANNING LINES', 'GOLD FILTER', 'VERIFYING EDGE'],
+  ['STARTING SCAN', 'LIVE PROPS', 'CONFIDENCE CHECK', 'ELITE PLAYS'],
+  ['GOING LIVE', 'FULL SCAN', 'HUNTING EDGES', 'FINAL CUT'],
+  ['POWERING UP', 'REAL-TIME LINES', 'DEEP ANALYSIS', 'LOCKING GOLD'],
+  ['BOOTING SCAN', 'LOADING DATA', 'WEIGHING FORM', 'GOLD BOARD'],
+]
+
+const FACTS = [
+  'Gold picks are the rarest plays on the board. Most sessions only have 1 or 2.',
+  'The bar for gold is 90% confidence or higher. No exceptions, no rounding up.',
+  'Over 250 live props are scanned every load to find the few that truly qualify.',
+  'When gold picks hit they carry real conviction behind every number.',
+  'Hot streak plus weak opponent plus high usage is the gold formula.',
+  'Gold picks are shown separately because they deserve a different kind of attention.',
+  'Recent form matters more than season averages when it comes to prop bets.',
+  'The AI scores every line from 50 to 95. Gold means 90 or above.',
+  'If the confidence is not there, no pick is made. Quality always beats quantity.',
+  'Bull case and bear case are on every gold card so you know what you are getting into.',
+  'Trip Predicts covers NBA, MLB, NHL, NFL, CS2, LoL, Valorant and more.',
+  'Lines are fetched fresh every time so you never see stale or outdated props.',
+  'No more than 2 picks from the same league. Balance beats concentration.',
+  'The AI never defaults to HIGHER. Direction is set by the data every time.',
+  'A player on a 5-game hot streak against a weak defense is a textbook gold setup.',
+  'Stat category breakdown is on every card so you can verify the logic yourself.',
+  'Only pre-game props starting within the next 36 hours are ever shown.',
+  'Trip Predicts is free to use. No account, no paywall, just open and get picks.',
+  'The backend caches data every 5 minutes to keep load times as fast as possible.',
+  'Every gold pick includes a risk factor so you know what could go wrong.',
+  'Trip Predicts was built to give everyday bettors access to real analytical tools.',
+  'High usage players hit volume-based lines more consistently over a full season.',
+  'Pace of play is one of the most underrated factors in NBA and esports props.',
+  'The confidence bar on every card animates live when it loads. Watch it climb.',
+  'Rare but powerful. These are the plays worth sizing up when they appear.',
+  'Trip Predicts is powered by Claude, one of the most capable AI models available.',
+  'Picks are spread across different leagues to maximize your slate diversity.',
+  'The AI weighs matchup strength, usage rate, recent form and pace all at once.',
+  'Gold picks are never forced. If none qualify today, the board stays empty.',
+  'Every fact you are reading right now was written to help you bet smarter.',
 ]
 
 async function fetchPrizePicksLines() {
@@ -89,13 +87,25 @@ async function fetchPrizePicksLines() {
   return results
 }
 
+function shuffle(arr) {
+  const a = [...arr]
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]]
+  }
+  return a
+}
+
 export default function Gold() {
   const [picks, setPicks] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const [progress, setProgress] = useState(0)
   const [stepIdx, setStepIdx] = useState(0)
-  const [sessionSet, setSessionSet] = useState(GOLD_SESSION_SETS[0])
+  const [stepLabels, setStepLabels] = useState(STEP_LABELS[0])
+  const [facts, setFacts] = useState(FACTS)
+  const [factIdx, setFactIdx] = useState(0)
+  const [factVisible, setFactVisible] = useState(true)
 
   const now = new Date()
   const currentTime = now.toLocaleTimeString('en-US', { timeZone: 'America/New_York', hour: 'numeric', minute: '2-digit', hour12: true })
@@ -105,14 +115,30 @@ export default function Gold() {
     return () => clearTimeout(t)
   }, [])
 
+  useEffect(() => {
+    if (!loading) return
+    const interval = setInterval(() => {
+      setFactVisible(false)
+      setTimeout(() => {
+        setFactIdx(i => (i + 1) % facts.length)
+        setFactVisible(true)
+      }, 300)
+    }, 3000)
+    return () => clearInterval(interval)
+  }, [loading, facts])
+
   async function loadPicks() {
-    const newSet = GOLD_SESSION_SETS[Math.floor(Math.random() * GOLD_SESSION_SETS.length)]
-    setSessionSet(newSet)
+    const labels = STEP_LABELS[Math.floor(Math.random() * STEP_LABELS.length)]
+    const shuffledFacts = shuffle(FACTS)
+    setStepLabels(labels)
+    setFacts(shuffledFacts)
     setLoading(true)
     setError(null)
     setPicks([])
     setProgress(0)
     setStepIdx(0)
+    setFactIdx(0)
+    setFactVisible(true)
 
     await new Promise(r => setTimeout(r, 300))
     setProgress(15)
@@ -153,8 +179,6 @@ export default function Gold() {
     }
     setLoading(false)
   }
-
-  const currentStep = sessionSet.steps[stepIdx] || sessionSet.steps[0]
 
   return (
     <div style={{ width: '100%', height: '100%', overflowY: 'auto', padding: '24px', display: 'flex', flexDirection: 'column', gap: '24px' }}>
@@ -203,7 +227,7 @@ export default function Gold() {
 
           <div style={{ width: '100%', maxWidth: '340px' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
-              <div style={{ fontFamily: 'var(--font-d)', fontSize: '18px', letterSpacing: '2px', color: 'var(--gold)' }}>{currentStep.label}</div>
+              <div style={{ fontFamily: 'var(--font-d)', fontSize: '18px', letterSpacing: '2px', color: 'var(--gold)' }}>{stepLabels[stepIdx] || stepLabels[0]}</div>
               <div style={{ fontFamily: 'var(--font-c)', fontSize: '16px', fontWeight: 700, color: 'var(--text2)' }}>{progress}%</div>
             </div>
             <div style={{ height: '6px', background: 'var(--bg3)', borderRadius: '3px', overflow: 'hidden', border: '1px solid var(--border)' }}>
@@ -215,8 +239,13 @@ export default function Gold() {
                 transition: 'width 0.9s cubic-bezier(0.16,1,0.3,1)'
               }} />
             </div>
-            <div style={{ fontSize: '13px', color: 'var(--text2)', marginTop: '14px', lineHeight: 1.65, textAlign: 'center' }}>
-              {currentStep.sub}
+            <div style={{
+              fontSize: '13px', color: 'var(--text2)', marginTop: '18px',
+              lineHeight: 1.7, textAlign: 'center', minHeight: '44px',
+              opacity: factVisible ? 1 : 0,
+              transition: 'opacity 0.3s ease'
+            }}>
+              {facts[factIdx]}
             </div>
           </div>
         </div>
