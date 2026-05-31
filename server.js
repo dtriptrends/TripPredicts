@@ -12,6 +12,16 @@ const sleep = ms => new Promise(r => setTimeout(r, ms))
 let ppCache = { data: null, ts: 0 }
 const CACHE_TTL = 5 * 60 * 1000
 
+const PRIORITY = { 'NBA': 1, 'MLB': 2, 'NHL': 3, 'NFL': 4, 'CS2': 5, 'LOL': 5, 'VALORANT': 5, 'COD': 5 }
+
+function sortLines(rawLines) {
+  return rawLines?.sort((a, b) => {
+    const pa = PRIORITY[(a.league || '').toUpperCase()] || 99
+    const pb = PRIORITY[(b.league || '').toUpperCase()] || 99
+    return pa - pb
+  }).slice(0, 100)
+}
+
 function normalizePicks(raw) {
   return raw.map((p, i) => ({
     id: p.id || i + 1,
@@ -69,7 +79,7 @@ app.get('/prizepicks/:leagueId', async (req, res) => {
 app.post('/picks', async (req, res) => {
   try {
     const { currentTime, lines: rawLines } = req.body
-    const lines = rawLines?.slice(0, 100)
+    const lines = sortLines(rawLines)
     console.log('Analyzing', lines?.length, 'real PrizePicks lines')
     if (!lines || lines.length === 0) throw new Error('No lines provided')
 
@@ -123,7 +133,7 @@ Rules: Use exact names stats and line numbers from the data above. dir HIGHER or
 app.post('/gold', async (req, res) => {
   try {
     const { currentTime, lines: rawLines } = req.body
-    const lines = rawLines?.slice(0, 100)
+    const lines = sortLines(rawLines)
     console.log('Finding gold from', lines?.length, 'real lines')
     if (!lines || lines.length === 0) throw new Error('No lines provided')
 

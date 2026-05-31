@@ -25,7 +25,7 @@ async function fetchPrizePicksLines() {
       const startTime = new Date(proj.attributes.start_time)
       const hoursUntil = (startTime - now) / (1000 * 60 * 60)
       if (proj.attributes.status !== 'pre_game') return
-      if (hoursUntil < -1 || hoursUntil > 36) return
+      if (hoursUntil < 0 || hoursUntil > 36) return
       const playerId = proj.relationships?.new_player?.data?.id
       const player = players[playerId]
       if (!player || !player.name) return
