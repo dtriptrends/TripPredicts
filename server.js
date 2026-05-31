@@ -48,7 +48,7 @@ app.get('/prizepicks/:leagueId', async (req, res) => {
 app.post('/picks', async (req, res) => {
   try {
     const { currentTime, lines: rawLines } = req.body
-const lines = rawLines?.slice(0, 100)
+    const lines = rawLines?.slice(0, 100)
     console.log('Analyzing', lines?.length, 'real PrizePicks lines')
     if (!lines || lines.length === 0) throw new Error('No lines provided')
 
@@ -71,8 +71,10 @@ These are REAL live PrizePicks lines pulled directly from their platform right n
 
 ${linesText}
 
-Select the best 6 picks. Output ONLY this JSON array:
-[{"id":1,"name":"exact player name from above","meta":"League · Team","stat":"exact stat from above","val":"exact line number from above","dir":"HIGHER","conf":88,"sport":"NBA","initials":"PN","time":"exact time from above","date":"exact date from above","bull":"specific reason","bear":"real risk","cats":[{"n":"stat name","p":88},{"n":"other stat","p":75}]}]
+Select the best 6 picks. Prioritize in this order: NBA, MLB, NHL, NFL, esports (CS2, LoL, Valorant, COD). Only use WNBA, golf, or niche sports if nothing better is available. Look for lines where the player has a clear statistical edge — recent form, favorable matchup, pace of play, or usage rate. Avoid picks that are purely chalky or have no clear edge. Spread across different sports where possible.
+
+Output ONLY this JSON array:
+[{"id":1,"name":"exact player name from above","meta":"League · Team","stat":"exact stat from above","val":"exact line number from above","dir":"HIGHER","conf":88,"sport":"NBA","initials":"PN","time":"exact time from above","date":"exact date from above","bull":"specific reason based on matchup or form","bear":"real risk factor","cats":[{"n":"stat name","p":88},{"n":"other stat","p":75}]}]
 
 Rules: Use exact names stats and line numbers from the data above. dir HIGHER or LOWER based on analysis. conf 50-95. Do not default to HIGHER. Give exactly 6 picks.`
         }]
@@ -99,7 +101,8 @@ Rules: Use exact names stats and line numbers from the data above. dir HIGHER or
 
 app.post('/gold', async (req, res) => {
   try {
-    const { currentTime, lines } = req.body
+    const { currentTime, lines: rawLines } = req.body
+    const lines = rawLines?.slice(0, 100)
     console.log('Finding gold from', lines?.length, 'real lines')
     if (!lines || lines.length === 0) throw new Error('No lines provided')
 
@@ -118,12 +121,14 @@ app.post('/gold', async (req, res) => {
           role: 'user',
           content: `Current time: ${currentTime} ET
 
-These are REAL live PrizePicks lines. Find only the highest confidence picks (90%+):
+These are REAL live PrizePicks lines. Find only the highest confidence picks (90%+).
+
+Prioritize in this order: NBA, MLB, NHL, NFL, esports (CS2, LoL, Valorant, COD). Only use WNBA, golf, or niche sports if nothing better qualifies at 90%+. Look for lines with a clear statistical edge — recent hot streak, weak opponent, favorable conditions, high usage rate. Be selective. Only include picks you are genuinely 90%+ confident in.
 
 ${linesText}
 
-Output ONLY this JSON array with 90%+ confidence picks only:
-[{"id":1,"name":"exact player name","meta":"League · Team","stat":"exact stat","val":"exact line","dir":"HIGHER","conf":92,"sport":"NBA","initials":"PN","time":"exact time","date":"exact date","bull":"reason","bear":"risk","cats":[{"n":"stat","p":92},{"n":"other","p":80}]}]
+Output ONLY this JSON array:
+[{"id":1,"name":"exact player name","meta":"League · Team","stat":"exact stat","val":"exact line","dir":"HIGHER","conf":92,"sport":"NBA","initials":"PN","time":"exact time","date":"exact date","bull":"specific matchup or form reason","bear":"real risk","cats":[{"n":"stat","p":92},{"n":"other","p":80}]}]
 
 Rules: Use exact names stats and lines from above. Only include picks you are 90%+ confident in. Do not default to HIGHER.`
         }]
@@ -167,7 +172,7 @@ app.post('/chat', async (req, res) => {
           model: 'claude-sonnet-4-20250514',
           max_tokens: 4000,
           tools: [{ type: 'web_search_20250305', name: 'web_search' }],
-          system: `You are the Trip Predicts AI analyst for PrizePicks. You have real live prop lines provided to you. Use them. Only recommend picks from games in the next 36 hours. Cover NBA, WNBA, MLB, NHL, esports. Tiers: Regular below 75%, High 75-89%, GOLD 90%+. Do not default to HIGHER. Keep responses sharp and direct. Never use em dashes. Bold key info with **text**.`,
+          system: `You are the Trip Predicts AI analyst for PrizePicks. You have real live prop lines provided to you. Use them. Prioritize NBA, MLB, NHL, NFL, and esports (CS2, LoL, Valorant, COD) picks. Only recommend WNBA or niche sports if explicitly asked or nothing else is available. Look for clear statistical edges — recent form, matchup advantages, usage rates, pace of play. Only recommend picks from games in the next 36 hours. Tiers: Regular below 75%, High 75-89%, GOLD 90%+. Do not default to HIGHER. Keep responses sharp and direct. Never use em dashes. Bold key info with **text**.`,
           messages: current
         })
       })
