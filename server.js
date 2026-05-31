@@ -12,25 +12,22 @@ const sleep = ms => new Promise(r => setTimeout(r, ms))
 let ppCache = { data: null, ts: 0 }
 const CACHE_TTL = 5 * 60 * 1000
 
-function sortLines(rawLines) {
+function sortLines(rawLines, league) {
   if (!rawLines) return []
   const PRIORITY = { 'NBA': 1, 'MLB': 2, 'NHL': 3, 'NFL': 4, 'CS2': 5, 'LOL': 5, 'VALORANT': 5, 'COD': 5 }
+  if (league) {
+    return rawLines.filter(l => (l.league || '').toUpperCase() === league.toUpperCase()).slice(0, 100)
+  }
   const groups = {}
   rawLines.forEach(l => {
-    const league = (l.league || 'OTHER').toUpperCase()
-    if (!groups[league]) groups[league] = []
-    groups[league].push(l)
+    const lg = (l.league || 'OTHER').toUpperCase()
+    if (!groups[lg]) groups[lg] = []
+    groups[lg].push(l)
   })
-  const sorted = Object.entries(groups).sort(([a], [b]) => {
-    const pa = PRIORITY[a] || 99
-    const pb = PRIORITY[b] || 99
-    return pa - pb
-  })
+  const sorted = Object.entries(groups).sort(([a], [b]) => (PRIORITY[a] || 99) - (PRIORITY[b] || 99))
   const result = []
   const perSport = Math.max(5, Math.floor(80 / sorted.length))
-  sorted.forEach(([, lines]) => {
-    result.push(...lines.slice(0, perSport))
-  })
+  sorted.forEach(([, lines]) => result.push(...lines.slice(0, perSport)))
   return result.slice(0, 100)
 }
 
@@ -49,6 +46,7 @@ function normalizePicks(raw) {
     })(),
     conf: Number(p.conf || p.confidence || 75),
     sport: p.sport || 'Sport',
+    league: p.league || p.sport || 'Sport',
     initials: p.initials || (p.name || 'XX').split(' ').map(w => w[0]).join('').substring(0, 2).toUpperCase(),
     bull: p.bull || 'Strong pick based on current form.',
     bear: p.bear || 'Variance possible.',
@@ -56,6 +54,16 @@ function normalizePicks(raw) {
     time: p.time || null,
     date: p.date || null
   }))
+}
+
+function dedupe(picks) {
+  const seen = new Set()
+  return picks.filter(p => {
+    const key = p.name.toLowerCase()
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
 }
 
 app.get('/prizepicks/all', async (req, res) => {
@@ -90,14 +98,19 @@ app.get('/prizepicks/:leagueId', async (req, res) => {
 
 app.post('/picks', async (req, res) => {
   try {
-    const { currentTime, lines: rawLines } = req.body
-    const lines = sortLines(rawLines)
-    console.log('Analyzing', lines?.length, 'real PrizePicks lines')
+    const { currentTime, lines: rawLines, league, count = 6 } = req.body
+    const lines = sortLines(rawLines, league)
+    const pickCount = Math.min(count, 10, lines.length)
+    console.log('Analyzing', lines?.length, 'lines for league:', league || 'ALL')
     if (!lines || lines.length === 0) throw new Error('No lines provided')
 
     const linesText = lines.map(l =>
       `${l.name} (${l.league} · ${l.team}) | ${l.stat}: ${l.line} | ${l.date} ${l.start_time}`
     ).join('\n')
+
+    const spreadRule = league
+      ? `All picks must be from ${league}. Select the best ${pickCount} picks from the lines above.`
+      : `Select the best ${pickCount} picks. Spread across AT LEAST 3 different sports or leagues. Max 2 picks from the same league. Prioritize NBA, MLB, NHL, NFL, esports over WNBA or niche sports.`
 
     const response = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
@@ -110,16 +123,23 @@ app.post('/picks', async (req, res) => {
           role: 'user',
           content: `Current time: ${currentTime} ET
 
-These are REAL live PrizePicks lines pulled directly from their platform right now. Use ONLY these exact player names and exact line numbers — do not change any numbers:
+These are REAL live PrizePicks lines. Use ONLY these exact player names and exact line numbers:
 
 ${linesText}
 
-Select the best 6 picks. Prioritize NBA, MLB, NHL, NFL, and esports over WNBA or niche sports. Look for lines where the player has a clear statistical edge — recent form, favorable matchup, pace of play, or usage rate. Give exactly 6 picks spread across AT LEAST 3 different sports or leagues. Do not give more than 2 picks from the same league.
+${spreadRule}
+
+Look for lines where the player has a clear statistical edge — recent form, favorable matchup, pace of play, or usage rate.
 
 Output ONLY this JSON array:
-[{"id":1,"name":"exact player name from above","meta":"League · Team","stat":"exact stat from above","val":"exact line number from above","dir":"HIGHER","conf":88,"sport":"NBA","initials":"PN","time":"exact time from above","date":"exact date from above","bull":"specific reason based on matchup or form","bear":"real risk factor","cats":[{"n":"stat name","p":88},{"n":"other stat","p":75}]}]
+[{"id":1,"name":"exact player name from above","meta":"League · Team","stat":"exact stat from above","val":"exact line number from above","dir":"HIGHER","conf":88,"sport":"NBA","league":"NBA","initials":"PN","time":"exact time from above","date":"exact date from above","bull":"specific reason based on matchup or form","bear":"real risk factor","cats":[{"n":"stat name","p":88},{"n":"other stat","p":75}]}]
 
-Rules: Use exact names stats and line numbers from the data above. dir HIGHER or LOWER based on analysis. conf 50-95. Do not default to HIGHER. Give exactly 6 picks. Max 2 picks per league.`
+Rules:
+- Use exact names, stats and line numbers from the data above
+- dir is HIGHER or LOWER based on analysis — never a default
+- conf is 50-95
+- NEVER pick the same player more than once — every player name must be unique
+- Give exactly ${pickCount} picks`
         }]
       })
     })
@@ -133,7 +153,7 @@ Rules: Use exact names stats and line numbers from the data above. dir HIGHER or
     const end = textBlock.text.lastIndexOf(']')
     if (start === -1 || end === -1) throw new Error('Please retry in a moment.')
 
-    const picks = normalizePicks(JSON.parse(textBlock.text.slice(start, end + 1)))
+    const picks = dedupe(normalizePicks(JSON.parse(textBlock.text.slice(start, end + 1))))
     console.log('Got', picks.length, 'picks')
     res.json({ picks })
   } catch (e) {
@@ -144,14 +164,18 @@ Rules: Use exact names stats and line numbers from the data above. dir HIGHER or
 
 app.post('/gold', async (req, res) => {
   try {
-    const { currentTime, lines: rawLines } = req.body
-    const lines = sortLines(rawLines)
-    console.log('Finding gold from', lines?.length, 'real lines')
+    const { currentTime, lines: rawLines, league } = req.body
+    const lines = sortLines(rawLines, league)
+    console.log('Finding gold from', lines?.length, 'lines for league:', league || 'ALL')
     if (!lines || lines.length === 0) throw new Error('No lines provided')
 
     const linesText = lines.map(l =>
       `${l.name} (${l.league} · ${l.team}) | ${l.stat}: ${l.line} | ${l.date} ${l.start_time}`
     ).join('\n')
+
+    const spreadRule = league
+      ? `All picks must be from ${league}. Only include lines you are 90%+ confident in.`
+      : `Prioritize NBA, MLB, NHL, NFL, esports. Spread across AT LEAST 2 different leagues. Max 2 picks per league.`
 
     const response = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
@@ -166,14 +190,20 @@ app.post('/gold', async (req, res) => {
 
 These are REAL live PrizePicks lines. Find only the highest confidence picks (90%+).
 
-Prioritize NBA, MLB, NHL, NFL, and esports over WNBA or niche sports. Only include picks you are genuinely 90%+ confident in based on recent form, matchup, usage, or statistical edge. Spread across AT LEAST 2 different leagues. Do not give more than 2 picks from the same league.
+${spreadRule}
+
+Only include picks you are genuinely 90%+ confident in based on recent form, matchup, usage, or statistical edge.
 
 ${linesText}
 
 Output ONLY this JSON array:
-[{"id":1,"name":"exact player name","meta":"League · Team","stat":"exact stat","val":"exact line","dir":"HIGHER","conf":92,"sport":"NBA","initials":"PN","time":"exact time","date":"exact date","bull":"specific matchup or form reason","bear":"real risk","cats":[{"n":"stat","p":92},{"n":"other","p":80}]}]
+[{"id":1,"name":"exact player name","meta":"League · Team","stat":"exact stat","val":"exact line","dir":"HIGHER","conf":92,"sport":"NBA","league":"NBA","initials":"PN","time":"exact time","date":"exact date","bull":"specific matchup or form reason","bear":"real risk","cats":[{"n":"stat","p":92},{"n":"other","p":80}]}]
 
-Rules: Use exact names stats and lines from above. Only include picks you are 90%+ confident in. Do not default to HIGHER. Max 2 picks per league.`
+Rules:
+- Use exact names, stats and lines from above
+- Only include picks you are 90%+ confident in
+- dir is HIGHER or LOWER — never a default
+- NEVER pick the same player more than once`
         }]
       })
     })
@@ -186,7 +216,7 @@ Rules: Use exact names stats and lines from above. Only include picks you are 90
     const end = textBlock.text.lastIndexOf(']')
     if (start === -1 || end === -1) throw new Error('No gold picks right now.')
 
-    const picks = normalizePicks(JSON.parse(textBlock.text.slice(start, end + 1))).filter(p => p.conf >= 90)
+    const picks = dedupe(normalizePicks(JSON.parse(textBlock.text.slice(start, end + 1)))).filter(p => p.conf >= 90)
     console.log('Got', picks.length, 'gold picks')
     res.json({ picks })
   } catch (e) {
@@ -215,7 +245,7 @@ app.post('/chat', async (req, res) => {
           model: 'claude-sonnet-4-20250514',
           max_tokens: 4000,
           tools: [{ type: 'web_search_20250305', name: 'web_search' }],
-          system: `You are the Trip Predicts AI analyst for PrizePicks. You have real live prop lines provided to you. Use them. Prioritize NBA, MLB, NHL, NFL, and esports picks. Only recommend WNBA or niche sports if explicitly asked or nothing else is available. Look for clear statistical edges — recent form, matchup advantages, usage rates, pace of play. Only recommend picks from games in the next 36 hours. Spread picks across multiple sports when building lineups — never more than 2 from the same league. Tiers: Regular below 75%, High 75-89%, GOLD 90%+. Do not default to HIGHER. Keep responses sharp and direct. Never use em dashes. Bold key info with **text**.`,
+          system: `You are the Trip Predicts AI analyst for PrizePicks. You have real live prop lines provided to you. Use them. Prioritize NBA, MLB, NHL, NFL, and esports picks. Only recommend WNBA or niche sports if explicitly asked or nothing else is available. Look for clear statistical edges — recent form, matchup advantages, usage rates, pace of play. Only recommend picks from games in the next 36 hours. Never recommend the same player twice in a single lineup. Spread picks across multiple sports when building lineups — never more than 2 from the same league. Tiers: Regular below 75%, High 75-89%, GOLD 90%+. Do not default to HIGHER. Keep responses sharp and direct. Never use em dashes. Bold key info with **text**.`,
           messages: current
         })
       })
