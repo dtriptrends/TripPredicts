@@ -3,6 +3,16 @@ import PickCard from './PickCard'
 
 const SERVER = 'https://trippredicts-production-cfad.up.railway.app'
 
+const LOAD_MSGS = [
+  { title: 'LIVE LINES', sub: 'Pulling real props directly from PrizePicks' },
+  { title: 'AI ANALYSIS', sub: 'Weighing recent form, matchups and usage rates' },
+  { title: 'MULTI-SPORT', sub: 'Covers NBA, MLB, NHL, NFL, esports and more' },
+  { title: 'GOLD PICKS', sub: '90%+ confidence only. Rare but powerful plays' },
+  { title: 'BULL & BEAR', sub: 'Every pick has a reason to hit and a risk to know' },
+  { title: 'HIGHER OR LOWER', sub: 'Direction is set by data, not guesswork' },
+  { title: 'SPORT SPREAD', sub: 'Picks are spread across leagues for max value' },
+]
+
 async function fetchPrizePicksLines() {
   const results = []
   try {
@@ -51,6 +61,7 @@ export default function Tonight() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const [liveCount, setLiveCount] = useState(0)
+  const [msgIdx, setMsgIdx] = useState(0)
 
   const now = new Date()
   const hour = now.getHours()
@@ -67,10 +78,19 @@ export default function Tonight() {
     return () => clearTimeout(t)
   }, [])
 
+  useEffect(() => {
+    if (!loading) return
+    const interval = setInterval(() => {
+      setMsgIdx(i => (i + 1) % LOAD_MSGS.length)
+    }, 2500)
+    return () => clearInterval(interval)
+  }, [loading])
+
   async function loadPicks() {
     setLoading(true)
     setError(null)
     setPicks([])
+    setMsgIdx(0)
     try {
       const lines = await fetchPrizePicksLines()
       setLiveCount(lines.length)
@@ -96,6 +116,7 @@ export default function Tonight() {
   }
 
   const gold = picks.filter(p => p.conf >= 90)
+  const msg = LOAD_MSGS[msgIdx]
 
   return (
     <div style={{ width: '100%', height: '100%', overflowY: 'auto', padding: '24px', display: 'flex', flexDirection: 'column', gap: '24px' }}>
@@ -117,12 +138,19 @@ export default function Tonight() {
       </div>
 
       {loading && (
-        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '80px 0', gap: '16px' }}>
-          <div style={{ fontFamily: 'var(--font-d)', fontSize: '22px', letterSpacing: '2px', color: 'var(--gold)' }}>PULLING LIVE LINES</div>
-          <div style={{ fontSize: '13px', color: 'var(--text2)' }}>Fetching real PrizePicks data...</div>
-          <div style={{ display: 'flex', gap: '8px', marginTop: '8px' }}>
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '60px 0', gap: '24px' }}>
+          <div style={{ display: 'flex', gap: '8px' }}>
             {[0, 1, 2].map(i => (
               <div key={i} style={{ width: '8px', height: '8px', borderRadius: '50%', background: 'var(--gold)', animation: `dotPulse 1.3s ${i * 0.2}s infinite` }} />
+            ))}
+          </div>
+          <div style={{ textAlign: 'center', maxWidth: '280px', transition: 'opacity 0.4s ease' }}>
+            <div style={{ fontFamily: 'var(--font-d)', fontSize: '20px', letterSpacing: '3px', color: 'var(--gold)', marginBottom: '8px' }}>{msg.title}</div>
+            <div style={{ fontSize: '13px', color: 'var(--text2)', lineHeight: 1.6 }}>{msg.sub}</div>
+          </div>
+          <div style={{ display: 'flex', gap: '6px', marginTop: '4px' }}>
+            {LOAD_MSGS.map((_, i) => (
+              <div key={i} style={{ width: i === msgIdx ? '20px' : '6px', height: '4px', borderRadius: '2px', background: i === msgIdx ? 'var(--gold)' : 'var(--border2)', transition: 'all 0.4s ease' }} />
             ))}
           </div>
         </div>

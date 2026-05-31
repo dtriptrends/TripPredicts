@@ -16,10 +16,16 @@ export default function App() {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100vh' }}>
       <Navbar tab={tab} setTab={setTab} onAbout={() => setShowAbout(true)} />
-      <div style={{ flex: 1, overflow: 'hidden', display: 'flex' }}>
-        {tab === 'tonight' && <Tonight />}
-        {tab === 'gold' && <Gold />}
-        {tab === 'chat' && <Chat />}
+      <div style={{ flex: 1, overflow: 'hidden', position: 'relative' }}>
+        <div style={{ display: tab === 'tonight' ? 'flex' : 'none', position: 'absolute', inset: 0 }}>
+          <Tonight />
+        </div>
+        <div style={{ display: tab === 'gold' ? 'flex' : 'none', position: 'absolute', inset: 0 }}>
+          <Gold />
+        </div>
+        <div style={{ display: tab === 'chat' ? 'flex' : 'none', position: 'absolute', inset: 0 }}>
+          <Chat />
+        </div>
       </div>
       <footer style={{
         padding: '8px 24px', textAlign: 'center',

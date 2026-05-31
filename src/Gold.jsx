@@ -3,6 +3,15 @@ import PickCard from './PickCard'
 
 const SERVER = 'https://trippredicts-production-cfad.up.railway.app'
 
+const LOAD_MSGS = [
+  { title: 'HUNTING GOLD', sub: 'Scanning every live line for 90%+ confidence plays' },
+  { title: 'HIGH STANDARDS', sub: 'Gold picks are rare. Only the best make the cut.' },
+  { title: 'MULTI-SPORT', sub: 'Looking across NBA, MLB, NHL, NFL and esports' },
+  { title: 'REAL EDGE', sub: 'AI looks for hot streaks, weak opponents and high usage' },
+  { title: 'BULL & BEAR', sub: 'Every gold pick comes with a reason and a risk' },
+  { title: 'CONFIDENCE FIRST', sub: 'If the data is not there, no pick is made' },
+]
+
 async function fetchPrizePicksLines() {
   const results = []
   try {
@@ -50,6 +59,7 @@ export default function Gold() {
   const [picks, setPicks] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
+  const [msgIdx, setMsgIdx] = useState(0)
 
   const now = new Date()
   const currentTime = now.toLocaleTimeString('en-US', { timeZone: 'America/New_York', hour: 'numeric', minute: '2-digit', hour12: true })
@@ -59,10 +69,19 @@ export default function Gold() {
     return () => clearTimeout(t)
   }, [])
 
+  useEffect(() => {
+    if (!loading) return
+    const interval = setInterval(() => {
+      setMsgIdx(i => (i + 1) % LOAD_MSGS.length)
+    }, 2500)
+    return () => clearInterval(interval)
+  }, [loading])
+
   async function loadPicks() {
     setLoading(true)
     setError(null)
     setPicks([])
+    setMsgIdx(0)
     try {
       const lines = await fetchPrizePicksLines()
       if (lines.length === 0) throw new Error('No live props on PrizePicks right now. Check back soon.')
@@ -86,6 +105,8 @@ export default function Gold() {
     setLoading(false)
   }
 
+  const msg = LOAD_MSGS[msgIdx]
+
   return (
     <div style={{ width: '100%', height: '100%', overflowY: 'auto', padding: '24px', display: 'flex', flexDirection: 'column', gap: '24px' }}>
       <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between' }}>
@@ -104,12 +125,19 @@ export default function Gold() {
       </div>
 
       {loading && (
-        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '80px 0', gap: '16px' }}>
-          <div style={{ fontFamily: 'var(--font-d)', fontSize: '22px', letterSpacing: '2px', color: 'var(--gold)' }}>HUNTING GOLD PICKS</div>
-          <div style={{ fontSize: '13px', color: 'var(--text2)' }}>Searching for 90%+ confidence plays...</div>
-          <div style={{ display: 'flex', gap: '8px', marginTop: '8px' }}>
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '60px 0', gap: '24px' }}>
+          <div style={{ display: 'flex', gap: '8px' }}>
             {[0, 1, 2].map(i => (
               <div key={i} style={{ width: '8px', height: '8px', borderRadius: '50%', background: 'var(--gold)', animation: `dotPulse 1.3s ${i * 0.2}s infinite` }} />
+            ))}
+          </div>
+          <div style={{ textAlign: 'center', maxWidth: '280px' }}>
+            <div style={{ fontFamily: 'var(--font-d)', fontSize: '20px', letterSpacing: '3px', color: 'var(--gold)', marginBottom: '8px' }}>{msg.title}</div>
+            <div style={{ fontSize: '13px', color: 'var(--text2)', lineHeight: 1.6 }}>{msg.sub}</div>
+          </div>
+          <div style={{ display: 'flex', gap: '6px', marginTop: '4px' }}>
+            {LOAD_MSGS.map((_, i) => (
+              <div key={i} style={{ width: i === msgIdx ? '20px' : '6px', height: '4px', borderRadius: '2px', background: i === msgIdx ? 'var(--gold)' : 'var(--border2)', transition: 'all 0.4s ease' }} />
             ))}
           </div>
         </div>

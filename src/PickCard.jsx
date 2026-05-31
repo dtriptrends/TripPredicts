@@ -2,12 +2,26 @@ import React, { useState, useEffect } from 'react'
 
 function tierOf(c) { return c >= 90 ? 'gold' : c >= 75 ? 'high' : 'regular' }
 
+const LEAGUE_COLORS = {
+  'NBA':      { bg: 'rgba(225,114,16,0.15)',  color: '#e17210', border: 'rgba(225,114,16,0.3)' },
+  'MLB':      { bg: 'rgba(74,144,217,0.12)',  color: '#4a90d9', border: 'rgba(74,144,217,0.3)' },
+  'NHL':      { bg: 'rgba(255,255,255,0.08)', color: '#aab4cc', border: 'rgba(255,255,255,0.15)' },
+  'NFL':      { bg: 'rgba(74,144,217,0.12)',  color: '#4a90d9', border: 'rgba(74,144,217,0.3)' },
+  'WNBA':     { bg: 'rgba(255,105,0,0.12)',   color: '#ff6900', border: 'rgba(255,105,0,0.25)' },
+  'CS2':      { bg: 'rgba(0,180,216,0.12)',   color: '#00b4d8', border: 'rgba(0,180,216,0.25)' },
+  'LOL':      { bg: 'rgba(200,155,60,0.12)',  color: '#c89b3c', border: 'rgba(200,155,60,0.25)' },
+  'VALORANT': { bg: 'rgba(255,70,85,0.12)',   color: '#ff4655', border: 'rgba(255,70,85,0.25)' },
+  'COD':      { bg: 'rgba(0,230,118,0.12)',   color: '#00e676', border: 'rgba(0,230,118,0.25)' },
+}
+
 export default function PickCard({ pick, delay = 0 }) {
   const [revealed, setRevealed] = useState(false)
   const [barWidth, setBarWidth] = useState(0)
   const [infoOpen, setInfoOpen] = useState(false)
   const t = tierOf(pick.conf)
   const up = pick.dir === 'HIGHER'
+  const league = (pick.league || pick.sport || '').toUpperCase()
+  const lc = LEAGUE_COLORS[league] || { bg: 'rgba(255,255,255,0.06)', color: '#7a8aaa', border: 'rgba(255,255,255,0.1)' }
 
   useEffect(() => {
     const t1 = setTimeout(() => setRevealed(true), delay)
@@ -36,9 +50,13 @@ export default function PickCard({ pick, delay = 0 }) {
       animation: revealed && t === 'gold' ? 'goldPulse 2.5s 0.7s ease infinite' : 'none'
     }}>
 
-      <div style={{ height: '115px', background: '#111722', display: 'flex', alignItems: 'center', justifyContent: 'center', position: 'relative', overflow: 'hidden' }}>
+      <div style={{ height: '130px', background: '#111722', display: 'flex', alignItems: 'center', justifyContent: 'center', position: 'relative', overflow: 'hidden' }}>
         {pick.image
-          ? <img src={pick.image} alt={pick.name} style={{ width: '100%', height: '100%', objectFit: 'cover', objectPosition: 'top' }} />
+          ? <img
+              src={pick.image}
+              alt={pick.name}
+              style={{ width: '100%', height: '100%', objectFit: 'cover', objectPosition: 'center top' }}
+            />
           : <div style={{
               width: '72px', height: '72px', borderRadius: '50%',
               background: t === 'gold' ? 'linear-gradient(135deg,#2a1f00,#1a1400)' : 'linear-gradient(135deg,#161e2e,#0c1018)',
@@ -48,6 +66,7 @@ export default function PickCard({ pick, delay = 0 }) {
               color: t === 'gold' ? '#f5c842' : '#7a8aaa', letterSpacing: '1px'
             }}>{pick.initials}</div>
         }
+
         <div style={{
           position: 'absolute', top: '8px', right: '8px',
           fontFamily: "'Barlow Condensed',sans-serif", fontSize: '10px', fontWeight: 700,
@@ -57,8 +76,17 @@ export default function PickCard({ pick, delay = 0 }) {
           color: t === 'gold' ? '#1a0f00' : t === 'high' ? '#10b981' : '#3a4a6a',
           border: t === 'high' ? '1px solid rgba(16,185,129,0.25)' : 'none'
         }}>{t === 'gold' ? '★ GOLD' : t === 'high' ? 'HIGH' : 'PICK'}</div>
-        <div style={{ position: 'absolute', bottom: '5px', left: '7px', fontFamily: "'Bebas Neue',sans-serif", fontSize: '8px', letterSpacing: '1.5px', color: 'rgba(255,255,255,0.08)' }}>TRIP PREDICTS</div>
-        <div style={{ position: 'absolute', bottom: '5px', right: '7px', fontSize: '9px', color: 'rgba(255,255,255,0.12)', letterSpacing: '0.5px', fontFamily: "'Barlow Condensed',sans-serif", fontWeight: 600 }}>{pick.sport}</div>
+
+        <div style={{ position: 'absolute', bottom: '7px', left: '8px', fontFamily: "'Bebas Neue',sans-serif", fontSize: '8px', letterSpacing: '1.5px', color: 'rgba(255,255,255,0.08)' }}>TRIP PREDICTS</div>
+
+        <div style={{
+          position: 'absolute', bottom: '6px', right: '8px',
+          fontFamily: "'Barlow Condensed',sans-serif", fontSize: '10px', fontWeight: 700,
+          letterSpacing: '1px', textTransform: 'uppercase',
+          padding: '2px 7px', borderRadius: '6px',
+          background: lc.bg, color: lc.color, border: `1px solid ${lc.border}`
+        }}>{league || pick.sport}</div>
+
         {t === 'gold' && revealed && (
           <div style={{ position: 'absolute', inset: 0, pointerEvents: 'none', overflow: 'hidden' }}>
             <div style={{ position: 'absolute', top: 0, left: 0, width: '45%', height: '100%', background: 'linear-gradient(105deg,transparent,rgba(255,220,80,0.12),transparent)', animation: 'shimmerMove 2.5s 0.8s ease infinite' }} />
@@ -69,12 +97,13 @@ export default function PickCard({ pick, delay = 0 }) {
       <div style={{ padding: '12px 13px 10px' }}>
         <div style={{ fontFamily: "'Barlow Condensed',sans-serif", fontSize: '15px', fontWeight: 700, color: '#eef2ff', letterSpacing: '0.5px', lineHeight: 1.1 }}>{pick.name}</div>
         <div style={{ fontSize: '11px', color: '#7a8aaa', marginTop: '2px' }}>{pick.meta}</div>
-       {(pick.time || pick.date) && (
-  <div style={{ fontSize: '10px', color: '#f5c842', marginTop: '3px', marginBottom: '8px', fontFamily: "'Barlow Condensed',sans-serif", fontWeight: 600, letterSpacing: '0.5px' }}>
-    🕐 {pick.date ? `${pick.date} · ` : ''}{pick.time || ''}
-  </div>
-)}
-{!pick.time && !pick.date && <div style={{ marginBottom: '11px' }} />}
+        {(pick.time || pick.date) && (
+          <div style={{ fontSize: '10px', color: '#f5c842', marginTop: '3px', marginBottom: '8px', fontFamily: "'Barlow Condensed',sans-serif", fontWeight: 600, letterSpacing: '0.5px' }}>
+            🕐 {pick.date ? `${pick.date} · ` : ''}{pick.time || ''}
+          </div>
+        )}
+        {!pick.time && !pick.date && <div style={{ marginBottom: '11px' }} />}
+
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '10px' }}>
           <div>
             <div style={{ fontSize: '11px', color: '#7a8aaa' }}>{pick.stat}</div>
