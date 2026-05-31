@@ -3,6 +3,20 @@ import PickCard from './PickCard'
 
 const SERVER = 'https://trippredicts-production-cfad.up.railway.app'
 
+const LEAGUE_ORDER = ['ALL', 'NBA', 'MLB', 'NHL', 'NFL', 'WNBA', 'CS2', 'LOL', 'VALORANT', 'COD']
+
+const LEAGUE_COLORS = {
+  'NBA':      '#e17210',
+  'MLB':      '#4a90d9',
+  'NHL':      '#aab4cc',
+  'NFL':      '#4a90d9',
+  'WNBA':     '#ff6900',
+  'CS2':      '#00b4d8',
+  'LOL':      '#c89b3c',
+  'VALORANT': '#ff4655',
+  'COD':      '#00e676',
+}
+
 const STEP_LABELS = [
   ['CONNECTING', 'LIVE LINES', 'AI ANALYSIS', 'YOUR SLATE'],
   ['STARTING UP', 'FETCHING PROPS', 'RUNNING MODELS', 'LOCKING PLAYS'],
@@ -17,7 +31,6 @@ const FACTS = [
   'Every pick shows a bull case and a bear case so you know the risk upfront.',
   'The AI never defaults to HIGHER. Direction is set by the data.',
   'Picks are spread across at least 3 different leagues every slate.',
-  'No more than 2 picks from the same league in a single set.',
   'Trip Predicts covers NBA, MLB, NHL, NFL, CS2, LoL, Valorant and more.',
   'Over 250 live props are scanned every single time you hit load.',
   'Recent form is weighted more heavily than season averages for prop bets.',
@@ -106,6 +119,7 @@ export default function Tonight() {
   const [facts, setFacts] = useState(FACTS)
   const [factIdx, setFactIdx] = useState(0)
   const [factVisible, setFactVisible] = useState(true)
+  const [leagueTab, setLeagueTab] = useState('ALL')
 
   const now = new Date()
   const hour = now.getHours()
@@ -146,6 +160,7 @@ export default function Tonight() {
     setStepIdx(0)
     setFactIdx(0)
     setFactVisible(true)
+    setLeagueTab('ALL')
 
     await new Promise(r => setTimeout(r, 300))
     setProgress(15)
@@ -188,10 +203,33 @@ export default function Tonight() {
     setLoading(false)
   }
 
-  const gold = picks.filter(p => p.conf >= 90)
+  // Build tabs dynamically from picks, sorted by LEAGUE_ORDER
+  const pickLeagues = [...new Set(picks.map(p => (p.league || p.sport || '').toUpperCase()))]
+  const orderedTabs = LEAGUE_ORDER.filter(l => l === 'ALL' || pickLeagues.includes(l))
+  const otherTabs = pickLeagues.filter(l => l && !LEAGUE_ORDER.includes(l))
+  const tabs = [...orderedTabs, ...otherTabs]
+
+  // Filter picks for selected tab
+  const tabPicks = leagueTab === 'ALL'
+    ? picks
+    : picks.filter(p => (p.league || p.sport || '').toUpperCase() === leagueTab)
+
+  const tabGold = tabPicks.filter(p => p.conf >= 90)
+  const tabHigh = tabPicks.filter(p => p.conf >= 75 && p.conf < 90)
+  const tabRegular = tabPicks.filter(p => p.conf < 75)
+
+  const SectionHeader = ({ label, range, color }) => (
+    <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '14px' }}>
+      <div style={{ fontFamily: 'var(--font-c)', fontSize: '13px', fontWeight: 700, letterSpacing: '2px', textTransform: 'uppercase', color }}>{label}</div>
+      <div style={{ fontSize: '11px', color: 'var(--text3)' }}>{range}</div>
+      <div style={{ flex: 1, height: '1px', background: 'var(--border)' }} />
+    </div>
+  )
 
   return (
-    <div style={{ width: '100%', height: '100%', overflowY: 'auto', padding: '24px', display: 'flex', flexDirection: 'column', gap: '24px' }}>
+    <div style={{ width: '100%', height: '100%', overflowY: 'auto', padding: '24px', display: 'flex', flexDirection: 'column', gap: '20px' }}>
+
+      {/* Header */}
       <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between' }}>
         <div>
           <div style={{ fontFamily: 'var(--font-d)', fontSize: '32px', letterSpacing: '2px', color: 'var(--text)', lineHeight: 1 }}>{pageTitle}</div>
@@ -209,6 +247,7 @@ export default function Tonight() {
         </div>
       </div>
 
+      {/* Loading */}
       {loading && (
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '50px 0', gap: '28px' }}>
           <div style={{ display: 'flex', alignItems: 'center' }}>
@@ -236,7 +275,6 @@ export default function Tonight() {
               </React.Fragment>
             ))}
           </div>
-
           <div style={{ width: '100%', maxWidth: '340px' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
               <div style={{ fontFamily: 'var(--font-d)', fontSize: '18px', letterSpacing: '2px', color: 'var(--gold)' }}>{stepLabels[stepIdx] || stepLabels[0]}</div>
@@ -263,6 +301,7 @@ export default function Tonight() {
         </div>
       )}
 
+      {/* Error */}
       {error && !loading && (
         <div style={{ textAlign: 'center', padding: '80px 0' }}>
           <div style={{ fontSize: '14px', color: 'var(--text2)', marginBottom: '16px', lineHeight: 1.6 }}>{error}</div>
@@ -270,28 +309,89 @@ export default function Tonight() {
         </div>
       )}
 
-      {!loading && !error && gold.length > 0 && (
-        <div style={{ background: 'linear-gradient(135deg,rgba(245,200,66,0.04),rgba(245,200,66,0.01))', border: '1px solid rgba(245,200,66,0.18)', borderRadius: '18px', padding: '20px' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '18px' }}>
-            <span style={{ fontSize: '20px' }}>★</span>
-            <span style={{ fontFamily: 'var(--font-d)', fontSize: '26px', letterSpacing: '2px', color: 'var(--gold)' }}>GOLD PICKS</span>
-            <span style={{ fontSize: '12px', color: 'var(--text2)', marginLeft: 'auto' }}>90%+ Confidence · Strongest plays available</span>
-          </div>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(195px,1fr))', gap: '14px' }}>
-            {gold.map((p, i) => <PickCard key={p.id} pick={p} delay={i * 70} />)}
+      {/* League tabs */}
+      {!loading && !error && picks.length > 0 && (
+        <div style={{ overflowX: 'auto', paddingBottom: '4px', marginBottom: '-4px' }}>
+          <div style={{ display: 'flex', gap: '8px', minWidth: 'max-content' }}>
+            {tabs.map(tab => {
+              const count = tab === 'ALL' ? picks.length : picks.filter(p => (p.league || p.sport || '').toUpperCase() === tab).length
+              const hasGold = (tab === 'ALL' ? picks : picks.filter(p => (p.league || p.sport || '').toUpperCase() === tab)).some(p => p.conf >= 90)
+              const isActive = leagueTab === tab
+              const color = tab === 'ALL' ? '#f5c842' : (LEAGUE_COLORS[tab] || '#7a8aaa')
+              return (
+                <button key={tab} onClick={() => setLeagueTab(tab)} style={{
+                  background: isActive ? `${color}18` : 'var(--bg3)',
+                  border: `1px solid ${isActive ? color : 'var(--border)'}`,
+                  color: isActive ? color : 'var(--text2)',
+                  fontFamily: 'var(--font-c)',
+                  fontSize: '12px', fontWeight: 700, letterSpacing: '1px',
+                  padding: '7px 14px', borderRadius: '20px',
+                  cursor: 'pointer', transition: 'all 0.2s',
+                  display: 'flex', alignItems: 'center', gap: '6px',
+                  whiteSpace: 'nowrap'
+                }}>
+                  {hasGold && <span style={{ fontSize: '9px', color: '#f5c842' }}>★</span>}
+                  {tab}
+                  <span style={{
+                    background: isActive ? color : 'var(--border2)',
+                    color: isActive ? '#000' : 'var(--text3)',
+                    fontSize: '10px', fontWeight: 700,
+                    padding: '1px 6px', borderRadius: '10px',
+                    minWidth: '18px', textAlign: 'center'
+                  }}>{count}</span>
+                </button>
+              )
+            })}
           </div>
         </div>
       )}
 
-      {!loading && !error && picks.length > 0 && (
-        <div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '14px' }}>
-            <div style={{ fontFamily: 'var(--font-c)', fontSize: '16px', fontWeight: 600, letterSpacing: '2px', textTransform: 'uppercase', color: 'var(--text2)' }}>All Picks</div>
-            <div style={{ flex: 1, height: '1px', background: 'var(--border)' }} />
-          </div>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(195px,1fr))', gap: '14px' }}>
-            {picks.map((p, i) => <PickCard key={p.id} pick={p} delay={i * 70} />)}
-          </div>
+      {/* Picks */}
+      {!loading && !error && tabPicks.length > 0 && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
+
+          {/* Gold section */}
+          {tabGold.length > 0 && (
+            <div style={{ background: 'linear-gradient(135deg,rgba(245,200,66,0.04),rgba(245,200,66,0.01))', border: '1px solid rgba(245,200,66,0.18)', borderRadius: '18px', padding: '20px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '18px' }}>
+                <span style={{ fontSize: '18px' }}>★</span>
+                <span style={{ fontFamily: 'var(--font-d)', fontSize: '24px', letterSpacing: '2px', color: 'var(--gold)' }}>GOLD PICKS</span>
+                <span style={{ fontSize: '11px', color: 'var(--text2)', marginLeft: 'auto' }}>90%+ Confidence</span>
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(195px,1fr))', gap: '14px' }}>
+                {tabGold.map((p, i) => <PickCard key={p.id} pick={p} delay={i * 70} />)}
+              </div>
+            </div>
+          )}
+
+          {/* High confidence section */}
+          {tabHigh.length > 0 && (
+            <div>
+              <SectionHeader label="HIGH CONFIDENCE" range="75–89%" color="#10b981" />
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(195px,1fr))', gap: '14px' }}>
+                {tabHigh.map((p, i) => <PickCard key={p.id} pick={p} delay={i * 70} />)}
+              </div>
+            </div>
+          )}
+
+          {/* Regular section */}
+          {tabRegular.length > 0 && (
+            <div>
+              <SectionHeader label="PICKS" range="Below 75%" color="var(--text2)" />
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(195px,1fr))', gap: '14px' }}>
+                {tabRegular.map((p, i) => <PickCard key={p.id} pick={p} delay={i * 70} />)}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Empty tab state */}
+      {!loading && !error && tabPicks.length === 0 && picks.length > 0 && (
+        <div style={{ textAlign: 'center', padding: '60px 0' }}>
+          <div style={{ fontFamily: 'var(--font-d)', fontSize: '20px', letterSpacing: '2px', color: 'var(--text2)', marginBottom: '8px' }}>NO {leagueTab} PICKS THIS SLATE</div>
+          <div style={{ fontSize: '13px', color: 'var(--text3)', marginBottom: '20px' }}>Try another league or hit refresh for a new set.</div>
+          <button onClick={() => setLeagueTab('ALL')} style={{ background: 'none', border: '1px solid var(--border2)', color: 'var(--text2)', fontFamily: 'var(--font)', fontSize: '13px', padding: '8px 20px', borderRadius: '10px', cursor: 'pointer' }}>View All Picks</button>
         </div>
       )}
 
