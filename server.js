@@ -36,14 +36,8 @@ function normalizePicks(raw) {
 app.get('/prizepicks/:leagueId', async (req, res) => {
   try {
     const { leagueId } = req.params
-    const response = await fetch(`https://api.prizepicks.com/projections?league_id=${leagueId}&per_page=50&single_stat=true`, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'application/json',
-        'Referer': 'https://app.prizepicks.com/',
-        'Origin': 'https://app.prizepicks.com'
-      }
-    })
+    const target = encodeURIComponent(`https://api.prizepicks.com/projections?league_id=${leagueId}&per_page=50&single_stat=true`)
+    const response = await fetch(`https://api.scraperapi.com?api_key=${process.env.SCRAPER_API_KEY}&url=${target}`)
     const data = await response.json()
     res.json(data)
   } catch (e) {
@@ -197,5 +191,5 @@ app.post('/chat', async (req, res) => {
   }
 })
 
-const PORT = process.env.PORT || 3001
+const PORT = process.env.PORT || 8080
 app.listen(PORT, () => console.log(`Trip Predicts server running on port ${PORT}`))

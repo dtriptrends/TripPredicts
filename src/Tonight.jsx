@@ -8,7 +8,7 @@ async function fetchPrizePicksLines() {
   const results = []
   await Promise.all(LEAGUE_IDS.map(async (id) => {
     try {
-      const res = await fetch(`https://trippredicts-production.up.railway.app/prizepicks/${id}`)
+      const res = await fetch(`${SERVER}/prizepicks/${id}`)
       const data = await res.json()
       if (!data.data || !data.included) return
       const players = {}
@@ -168,16 +168,5 @@ export default function Tonight() {
         @keyframes dotPulse{0%,80%,100%{opacity:0.2;transform:scale(1);}40%{opacity:1;transform:scale(1.2);}}
       `}</style>
     </div>
-    app.get('/prizepicks/:leagueId', async (req, res) => {
-  try {
-    const { leagueId } = req.params
-    const target = encodeURIComponent(`https://api.prizepicks.com/projections?league_id=${leagueId}&per_page=50&single_stat=true`)
-    const response = await fetch(`https://api.scraperapi.com?api_key=${process.env.SCRAPER_API_KEY}&url=${target}`)
-    const data = await response.json()
-    res.json(data)
-  } catch (e) {
-    res.status(500).json({ error: e.message })
-  }
-})
   )
 }
