@@ -2,50 +2,47 @@ import React, { useEffect, useState } from 'react'
 import PickCard from './PickCard'
 
 const SERVER = 'https://trippredicts-production-cfad.up.railway.app'
-const LEAGUE_IDS = [2, 3, 7, 4, 14]
 
 async function fetchPrizePicksLines() {
   const results = []
-  await Promise.all(LEAGUE_IDS.map(async (id) => {
-    try {
-      const res = await fetch(`${SERVER}/prizepicks/${id}`)
-      const data = await res.json()
-      if (!data.data || !data.included) return
-      const players = {}
-      data.included.forEach(item => {
-        if (item.type === 'new_player') {
-          players[item.id] = {
-            name: item.attributes.display_name || item.attributes.name,
-            team: item.attributes.team,
-            league: item.attributes.league,
-            image: item.attributes.image_url
-          }
+  try {
+    const res = await fetch(`${SERVER}/prizepicks/all`)
+    const data = await res.json()
+    if (!data.data || !data.included) return results
+    const players = {}
+    data.included.forEach(item => {
+      if (item.type === 'new_player') {
+        players[item.id] = {
+          name: item.attributes.display_name || item.attributes.name,
+          team: item.attributes.team,
+          league: item.attributes.league,
+          image: item.attributes.image_url
         }
+      }
+    })
+    const now = new Date()
+    data.data.forEach(proj => {
+      const startTime = new Date(proj.attributes.start_time)
+      const hoursUntil = (startTime - now) / (1000 * 60 * 60)
+      if (proj.attributes.status !== 'pre_game') return
+      if (hoursUntil < -1 || hoursUntil > 36) return
+      const playerId = proj.relationships?.new_player?.data?.id
+      const player = players[playerId]
+      if (!player || !player.name) return
+      results.push({
+        name: player.name,
+        team: player.team,
+        league: player.league,
+        image: player.image,
+        stat: proj.attributes.stat_display_name,
+        line: proj.attributes.line_score,
+        start_time: startTime.toLocaleTimeString('en-US', { timeZone: 'America/New_York', hour: 'numeric', minute: '2-digit', hour12: true }) + ' ET',
+        date: startTime.toLocaleDateString('en-US', { timeZone: 'America/New_York', weekday: 'short', month: 'short', day: 'numeric' })
       })
-      const now = new Date()
-      data.data.forEach(proj => {
-        const startTime = new Date(proj.attributes.start_time)
-        const hoursUntil = (startTime - now) / (1000 * 60 * 60)
-        if (proj.attributes.status !== 'pre_game') return
-        if (hoursUntil < -1 || hoursUntil > 36) return
-        const playerId = proj.relationships?.new_player?.data?.id
-        const player = players[playerId]
-        if (!player || !player.name) return
-        results.push({
-          name: player.name,
-          team: player.team,
-          league: player.league,
-          image: player.image,
-          stat: proj.attributes.stat_display_name,
-          line: proj.attributes.line_score,
-          start_time: startTime.toLocaleTimeString('en-US', { timeZone: 'America/New_York', hour: 'numeric', minute: '2-digit', hour12: true }) + ' ET',
-          date: startTime.toLocaleDateString('en-US', { timeZone: 'America/New_York', weekday: 'short', month: 'short', day: 'numeric' })
-        })
-      })
-    } catch (e) {
-      console.log('League', id, 'error:', e.message)
-    }
-  }))
+    })
+  } catch (e) {
+    console.log('Fetch error:', e.message)
+  }
   return results
 }
 

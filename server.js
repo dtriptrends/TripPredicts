@@ -33,6 +33,17 @@ function normalizePicks(raw) {
   }))
 }
 
+app.get('/prizepicks/all', async (req, res) => {
+  try {
+    const target = encodeURIComponent(`https://api.prizepicks.com/projections?per_page=250&single_stat=true`)
+    const response = await fetch(`https://api.scraperapi.com?api_key=${process.env.SCRAPER_API_KEY}&url=${target}`)
+    const data = await response.json()
+    res.json(data)
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
 app.get('/prizepicks/:leagueId', async (req, res) => {
   try {
     const { leagueId } = req.params
