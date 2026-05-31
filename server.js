@@ -1,3 +1,4 @@
+console.log('SERVER STARTING - node is running')
 import express from 'express'
 import cors from 'cors'
 
