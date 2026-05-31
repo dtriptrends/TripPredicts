@@ -41,7 +41,6 @@ const FACTS = [
   'Bull case tells you why the pick hits. Bear case tells you why it might not.',
   'A balanced slate beats a single-sport parlay almost every time.',
   'The AI scans all available leagues simultaneously to find the best plays.',
-  'Trip Predicts is powered by Claude, one of the most advanced AI models available.',
 ]
 
 async function fetchPrizePicksLines() {
