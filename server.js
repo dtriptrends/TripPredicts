@@ -12,14 +12,26 @@ const sleep = ms => new Promise(r => setTimeout(r, ms))
 let ppCache = { data: null, ts: 0 }
 const CACHE_TTL = 5 * 60 * 1000
 
-const PRIORITY = { 'NBA': 1, 'MLB': 2, 'NHL': 3, 'NFL': 4, 'CS2': 5, 'LOL': 5, 'VALORANT': 5, 'COD': 5 }
-
 function sortLines(rawLines) {
-  return rawLines?.sort((a, b) => {
-    const pa = PRIORITY[(a.league || '').toUpperCase()] || 99
-    const pb = PRIORITY[(b.league || '').toUpperCase()] || 99
+  if (!rawLines) return []
+  const PRIORITY = { 'NBA': 1, 'MLB': 2, 'NHL': 3, 'NFL': 4, 'CS2': 5, 'LOL': 5, 'VALORANT': 5, 'COD': 5 }
+  const groups = {}
+  rawLines.forEach(l => {
+    const league = (l.league || 'OTHER').toUpperCase()
+    if (!groups[league]) groups[league] = []
+    groups[league].push(l)
+  })
+  const sorted = Object.entries(groups).sort(([a], [b]) => {
+    const pa = PRIORITY[a] || 99
+    const pb = PRIORITY[b] || 99
     return pa - pb
-  }).slice(0, 100)
+  })
+  const result = []
+  const perSport = Math.max(5, Math.floor(80 / sorted.length))
+  sorted.forEach(([, lines]) => {
+    result.push(...lines.slice(0, perSport))
+  })
+  return result.slice(0, 100)
 }
 
 function normalizePicks(raw) {
@@ -102,12 +114,12 @@ These are REAL live PrizePicks lines pulled directly from their platform right n
 
 ${linesText}
 
-Select the best 6 picks. Prioritize in this order: NBA, MLB, NHL, NFL, esports (CS2, LoL, Valorant, COD). Only use WNBA, golf, or niche sports if nothing better is available. Look for lines where the player has a clear statistical edge — recent form, favorable matchup, pace of play, or usage rate. Avoid picks that are purely chalky or have no clear edge. Spread across different sports where possible.
+Select the best 6 picks. Prioritize NBA, MLB, NHL, NFL, and esports over WNBA or niche sports. Look for lines where the player has a clear statistical edge — recent form, favorable matchup, pace of play, or usage rate. Give exactly 6 picks spread across AT LEAST 3 different sports or leagues. Do not give more than 2 picks from the same league.
 
 Output ONLY this JSON array:
 [{"id":1,"name":"exact player name from above","meta":"League · Team","stat":"exact stat from above","val":"exact line number from above","dir":"HIGHER","conf":88,"sport":"NBA","initials":"PN","time":"exact time from above","date":"exact date from above","bull":"specific reason based on matchup or form","bear":"real risk factor","cats":[{"n":"stat name","p":88},{"n":"other stat","p":75}]}]
 
-Rules: Use exact names stats and line numbers from the data above. dir HIGHER or LOWER based on analysis. conf 50-95. Do not default to HIGHER. Give exactly 6 picks.`
+Rules: Use exact names stats and line numbers from the data above. dir HIGHER or LOWER based on analysis. conf 50-95. Do not default to HIGHER. Give exactly 6 picks. Max 2 picks per league.`
         }]
       })
     })
@@ -154,14 +166,14 @@ app.post('/gold', async (req, res) => {
 
 These are REAL live PrizePicks lines. Find only the highest confidence picks (90%+).
 
-Prioritize in this order: NBA, MLB, NHL, NFL, esports (CS2, LoL, Valorant, COD). Only use WNBA, golf, or niche sports if nothing better qualifies at 90%+. Look for lines with a clear statistical edge — recent hot streak, weak opponent, favorable conditions, high usage rate. Be selective. Only include picks you are genuinely 90%+ confident in.
+Prioritize NBA, MLB, NHL, NFL, and esports over WNBA or niche sports. Only include picks you are genuinely 90%+ confident in based on recent form, matchup, usage, or statistical edge. Spread across AT LEAST 2 different leagues. Do not give more than 2 picks from the same league.
 
 ${linesText}
 
 Output ONLY this JSON array:
 [{"id":1,"name":"exact player name","meta":"League · Team","stat":"exact stat","val":"exact line","dir":"HIGHER","conf":92,"sport":"NBA","initials":"PN","time":"exact time","date":"exact date","bull":"specific matchup or form reason","bear":"real risk","cats":[{"n":"stat","p":92},{"n":"other","p":80}]}]
 
-Rules: Use exact names stats and lines from above. Only include picks you are 90%+ confident in. Do not default to HIGHER.`
+Rules: Use exact names stats and lines from above. Only include picks you are 90%+ confident in. Do not default to HIGHER. Max 2 picks per league.`
         }]
       })
     })
@@ -203,7 +215,7 @@ app.post('/chat', async (req, res) => {
           model: 'claude-sonnet-4-20250514',
           max_tokens: 4000,
           tools: [{ type: 'web_search_20250305', name: 'web_search' }],
-          system: `You are the Trip Predicts AI analyst for PrizePicks. You have real live prop lines provided to you. Use them. Prioritize NBA, MLB, NHL, NFL, and esports (CS2, LoL, Valorant, COD) picks. Only recommend WNBA or niche sports if explicitly asked or nothing else is available. Look for clear statistical edges — recent form, matchup advantages, usage rates, pace of play. Only recommend picks from games in the next 36 hours. Tiers: Regular below 75%, High 75-89%, GOLD 90%+. Do not default to HIGHER. Keep responses sharp and direct. Never use em dashes. Bold key info with **text**.`,
+          system: `You are the Trip Predicts AI analyst for PrizePicks. You have real live prop lines provided to you. Use them. Prioritize NBA, MLB, NHL, NFL, and esports picks. Only recommend WNBA or niche sports if explicitly asked or nothing else is available. Look for clear statistical edges — recent form, matchup advantages, usage rates, pace of play. Only recommend picks from games in the next 36 hours. Spread picks across multiple sports when building lineups — never more than 2 from the same league. Tiers: Regular below 75%, High 75-89%, GOLD 90%+. Do not default to HIGHER. Keep responses sharp and direct. Never use em dashes. Bold key info with **text**.`,
           messages: current
         })
       })
