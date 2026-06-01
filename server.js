@@ -66,6 +66,22 @@ function dedupe(picks) {
   })
 }
 
+function validateLines(picks, rawLines) {
+  return picks.map(p => {
+    const match = rawLines.find(l =>
+      l.name.toLowerCase() === p.name.toLowerCase() &&
+      l.stat.toLowerCase() === p.stat.toLowerCase()
+    )
+    if (match) {
+      p.val = String(match.line)
+      p.league = p.league || match.league
+      if (!p.time && match.start_time) p.time = match.start_time
+      if (!p.date && match.date) p.date = match.date
+    }
+    return p
+  })
+}
+
 app.get('/prizepicks/all', async (req, res) => {
   try {
     const now = Date.now()
@@ -123,7 +139,7 @@ app.post('/picks', async (req, res) => {
           role: 'user',
           content: `Current time: ${currentTime} ET
 
-These are REAL live PrizePicks lines. Use ONLY these exact player names and exact line numbers:
+These are REAL live PrizePicks lines. Use ONLY these exact player names and exact line numbers — do not change any numbers under any circumstances:
 
 ${linesText}
 
@@ -135,10 +151,10 @@ Output ONLY this JSON array:
 [{"id":1,"name":"exact player name from above","meta":"League · Team","stat":"exact stat from above","val":"exact line number from above","dir":"HIGHER","conf":88,"sport":"NBA","league":"NBA","initials":"PN","time":"exact time from above","date":"exact date from above","bull":"specific reason based on matchup or form","bear":"real risk factor","cats":[{"n":"stat name","p":88},{"n":"other stat","p":75}]}]
 
 Rules:
-- Use exact names, stats and line numbers from the data above
+- Use exact names, stats and line numbers from the data above — never change the numbers
 - dir is HIGHER or LOWER based on analysis — never a default
 - conf is 50-95
-- NEVER pick the same player more than once — every player name must be unique
+- NEVER pick the same player more than once
 - Give exactly ${pickCount} picks`
         }]
       })
@@ -153,7 +169,7 @@ Rules:
     const end = textBlock.text.lastIndexOf(']')
     if (start === -1 || end === -1) throw new Error('Please retry in a moment.')
 
-    const picks = dedupe(normalizePicks(JSON.parse(textBlock.text.slice(start, end + 1))))
+    const picks = validateLines(dedupe(normalizePicks(JSON.parse(textBlock.text.slice(start, end + 1)))), rawLines)
     console.log('Got', picks.length, 'picks')
     res.json({ picks })
   } catch (e) {
@@ -188,7 +204,7 @@ app.post('/gold', async (req, res) => {
           role: 'user',
           content: `Current time: ${currentTime} ET
 
-These are REAL live PrizePicks lines. Find only the highest confidence picks (90%+).
+These are REAL live PrizePicks lines. Find only the highest confidence picks (90%+). Use ONLY these exact player names and exact line numbers — do not change any numbers under any circumstances:
 
 ${spreadRule}
 
@@ -200,7 +216,7 @@ Output ONLY this JSON array:
 [{"id":1,"name":"exact player name","meta":"League · Team","stat":"exact stat","val":"exact line","dir":"HIGHER","conf":92,"sport":"NBA","league":"NBA","initials":"PN","time":"exact time","date":"exact date","bull":"specific matchup or form reason","bear":"real risk","cats":[{"n":"stat","p":92},{"n":"other","p":80}]}]
 
 Rules:
-- Use exact names, stats and lines from above
+- Use exact names, stats and lines from above — never change the numbers
 - Only include picks you are 90%+ confident in
 - dir is HIGHER or LOWER — never a default
 - NEVER pick the same player more than once`
@@ -216,7 +232,7 @@ Rules:
     const end = textBlock.text.lastIndexOf(']')
     if (start === -1 || end === -1) throw new Error('No gold picks right now.')
 
-    const picks = dedupe(normalizePicks(JSON.parse(textBlock.text.slice(start, end + 1)))).filter(p => p.conf >= 90)
+    const picks = validateLines(dedupe(normalizePicks(JSON.parse(textBlock.text.slice(start, end + 1)))), rawLines).filter(p => p.conf >= 90)
     console.log('Got', picks.length, 'gold picks')
     res.json({ picks })
   } catch (e) {
@@ -245,7 +261,7 @@ app.post('/chat', async (req, res) => {
           model: 'claude-sonnet-4-20250514',
           max_tokens: 4000,
           tools: [{ type: 'web_search_20250305', name: 'web_search' }],
-          system: `You are the Trip Predicts AI analyst for PrizePicks. You have real live prop lines provided to you. Use them. Prioritize NBA, MLB, NHL, NFL, and esports picks. Only recommend WNBA or niche sports if explicitly asked or nothing else is available. Look for clear statistical edges — recent form, matchup advantages, usage rates, pace of play. Only recommend picks from games in the next 36 hours. Never recommend the same player twice in a single lineup. Spread picks across multiple sports when building lineups — never more than 2 from the same league. Tiers: Regular below 75%, High 75-89%, GOLD 90%+. Do not default to HIGHER. Keep responses sharp and direct. Never use em dashes. Bold key info with **text**.`,
+          system: `You are the Trip Predicts AI analyst for PrizePicks. You have real live prop lines provided to you. Use them. Always use the exact line numbers from the data provided — never use numbers from your training data. Prioritize NBA, MLB, NHL, NFL, and esports picks. Only recommend WNBA or niche sports if explicitly asked or nothing else is available. Look for clear statistical edges — recent form, matchup advantages, usage rates, pace of play. Only recommend picks from games in the next 36 hours. Never recommend the same player twice in a single lineup. Spread picks across multiple sports when building lineups — never more than 2 from the same league. Tiers: Regular below 75%, High 75-89%, GOLD 90%+. Do not default to HIGHER. Keep responses sharp and direct. Never use em dashes. Bold key info with **text**.`,
           messages: current
         })
       })
