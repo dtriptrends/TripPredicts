@@ -67,16 +67,24 @@ function dedupe(picks) {
 }
 
 function validateLines(picks, rawLines) {
+  if (!rawLines || rawLines.length === 0) return picks
   return picks.map(p => {
-    const match = rawLines.find(l =>
+    // Try exact name + stat match first
+    let match = rawLines.find(l =>
       l.name.toLowerCase() === p.name.toLowerCase() &&
       l.stat.toLowerCase() === p.stat.toLowerCase()
     )
+    // Fallback: name only — catches stat name mismatches
+    if (!match) {
+      match = rawLines.find(l => l.name.toLowerCase() === p.name.toLowerCase())
+    }
     if (match) {
       p.val = String(match.line)
-      p.league = p.league || match.league
-      if (!p.time && match.start_time) p.time = match.start_time
-      if (!p.date && match.date) p.date = match.date
+      p.stat = match.stat
+      p.league = match.league || p.league
+      p.team = match.team || p.team
+      if (match.start_time) p.time = match.start_time
+      if (match.date) p.date = match.date
     }
     return p
   })
@@ -139,19 +147,17 @@ app.post('/picks', async (req, res) => {
           role: 'user',
           content: `Current time: ${currentTime} ET
 
-These are REAL live PrizePicks lines. Use ONLY these exact player names and exact line numbers — do not change any numbers under any circumstances:
+These are REAL live PrizePicks lines. Use ONLY these exact player names and exact line numbers — do not change any numbers under any circumstances. The line number after the colon is the exact value to use:
 
 ${linesText}
 
 ${spreadRule}
 
-Look for lines where the player has a clear statistical edge — recent form, favorable matchup, pace of play, or usage rate.
-
 Output ONLY this JSON array:
-[{"id":1,"name":"exact player name from above","meta":"League · Team","stat":"exact stat from above","val":"exact line number from above","dir":"HIGHER","conf":88,"sport":"NBA","league":"NBA","initials":"PN","time":"exact time from above","date":"exact date from above","bull":"specific reason based on matchup or form","bear":"real risk factor","cats":[{"n":"stat name","p":88},{"n":"other stat","p":75}]}]
+[{"id":1,"name":"exact player name from above","meta":"League · Team","stat":"exact stat from above","val":"exact line number from above","dir":"HIGHER","conf":88,"sport":"NBA","league":"NBA","initials":"PN","time":"exact time from above","date":"exact date from above","bull":"specific reason","bear":"real risk","cats":[{"n":"stat name","p":88}]}]
 
 Rules:
-- Use exact names, stats and line numbers from the data above — never change the numbers
+- Copy the line number EXACTLY as it appears after the colon in the data above
 - dir is HIGHER or LOWER based on analysis — never a default
 - conf is 50-95
 - NEVER pick the same player more than once
@@ -204,19 +210,17 @@ app.post('/gold', async (req, res) => {
           role: 'user',
           content: `Current time: ${currentTime} ET
 
-These are REAL live PrizePicks lines. Find only the highest confidence picks (90%+). Use ONLY these exact player names and exact line numbers — do not change any numbers under any circumstances:
+These are REAL live PrizePicks lines. Find only the highest confidence picks (90%+). Use ONLY these exact player names and exact line numbers — do not change any numbers. The line number after the colon is the exact value to use:
 
 ${spreadRule}
-
-Only include picks you are genuinely 90%+ confident in based on recent form, matchup, usage, or statistical edge.
 
 ${linesText}
 
 Output ONLY this JSON array:
-[{"id":1,"name":"exact player name","meta":"League · Team","stat":"exact stat","val":"exact line","dir":"HIGHER","conf":92,"sport":"NBA","league":"NBA","initials":"PN","time":"exact time","date":"exact date","bull":"specific matchup or form reason","bear":"real risk","cats":[{"n":"stat","p":92},{"n":"other","p":80}]}]
+[{"id":1,"name":"exact player name","meta":"League · Team","stat":"exact stat","val":"exact line number from above","dir":"HIGHER","conf":92,"sport":"NBA","league":"NBA","initials":"PN","time":"exact time","date":"exact date","bull":"reason","bear":"risk","cats":[{"n":"stat","p":92}]}]
 
 Rules:
-- Use exact names, stats and lines from above — never change the numbers
+- Copy the line number EXACTLY as it appears after the colon in the data above
 - Only include picks you are 90%+ confident in
 - dir is HIGHER or LOWER — never a default
 - NEVER pick the same player more than once`
@@ -261,7 +265,7 @@ app.post('/chat', async (req, res) => {
           model: 'claude-sonnet-4-20250514',
           max_tokens: 4000,
           tools: [{ type: 'web_search_20250305', name: 'web_search' }],
-          system: `You are the Trip Predicts AI analyst for PrizePicks. You have real live prop lines provided to you. Use them. Always use the exact line numbers from the data provided — never use numbers from your training data. Prioritize NBA, MLB, NHL, NFL, and esports picks. Only recommend WNBA or niche sports if explicitly asked or nothing else is available. Look for clear statistical edges — recent form, matchup advantages, usage rates, pace of play. Only recommend picks from games in the next 36 hours. Never recommend the same player twice in a single lineup. Spread picks across multiple sports when building lineups — never more than 2 from the same league. Tiers: Regular below 75%, High 75-89%, GOLD 90%+. Do not default to HIGHER. Keep responses sharp and direct. Never use em dashes. Bold key info with **text**.`,
+          system: `You are the Trip Predicts AI analyst for PrizePicks. You have real live prop lines provided to you. Always use the exact line numbers from the data provided — never use numbers from your training data. Prioritize NBA, MLB, NHL, NFL, and esports picks. Only recommend WNBA or niche sports if explicitly asked. Look for clear statistical edges — recent form, matchup advantages, usage rates, pace of play. Only recommend picks from games in the next 36 hours. Never recommend the same player twice. Spread picks across multiple sports — never more than 2 from the same league. Tiers: Regular below 75%, High 75-89%, GOLD 90%+. Do not default to HIGHER. Keep responses sharp and direct. Never use em dashes. Bold key info with **text**.`,
           messages: current
         })
       })
