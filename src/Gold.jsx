@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useRef } from 'react'
+import React, { useEffect, useState } from 'react'
 import PickCard from './PickCard'
 
 const SERVER = 'https://trippredicts-production-cfad.up.railway.app'
@@ -22,39 +22,12 @@ const LEAGUE_COLORS = {
   'MMA':      '#ef4444',
 }
 
-const CTA_LABELS = {
-  'ALL':      { icon: '🔥', text: 'HUNT GOLD PICKS',  sub: 'Find 90%+ confidence plays across all sports' },
-  'NBA':      { icon: '🏀', text: 'HUNT NBA GOLD',    sub: 'Find elite NBA props at 90%+ confidence' },
-  'MLB':      { icon: '⚾', text: 'HUNT MLB GOLD',    sub: 'Find elite MLB props at 90%+ confidence' },
-  'NHL':      { icon: '🏒', text: 'HUNT NHL GOLD',    sub: 'Find elite NHL props at 90%+ confidence' },
-  'NFL':      { icon: '🏈', text: 'HUNT NFL GOLD',    sub: 'Find elite NFL props at 90%+ confidence' },
-  'WNBA':     { icon: '🏀', text: 'HUNT WNBA GOLD',  sub: 'Find elite WNBA props at 90%+ confidence' },
-  'CS2':      { icon: '🎮', text: 'HUNT CS2 GOLD',   sub: 'Find elite CS2 props at 90%+ confidence' },
-  'LOL':      { icon: '🎮', text: 'HUNT LOL GOLD',   sub: 'Find elite LoL props at 90%+ confidence' },
-  'VALORANT': { icon: '🎮', text: 'HUNT VAL GOLD',   sub: 'Find elite Valorant props at 90%+' },
-  'COD':      { icon: '🎮', text: 'HUNT COD GOLD',   sub: 'Find elite COD props at 90%+ confidence' },
-  'SOCCER':   { icon: '⚽', text: 'HUNT SOCCER GOLD', sub: 'Find elite soccer props at 90%+' },
-  'TENNIS':   { icon: '🎾', text: 'HUNT TENNIS GOLD', sub: 'Find elite tennis props at 90%+' },
-  'GOLF':     { icon: '⛳', text: 'HUNT GOLF GOLD',  sub: 'Find elite golf props at 90%+' },
-  'MMA':      { icon: '🥊', text: 'HUNT MMA GOLD',   sub: 'Find elite MMA props at 90%+ confidence' },
-}
-
 const STEP_LABELS = [
   ['CONNECTING', 'SCANNING LINES', 'GOLD FILTER', 'VERIFYING EDGE'],
   ['STARTING SCAN', 'LIVE PROPS', 'CONFIDENCE CHECK', 'ELITE PLAYS'],
   ['GOING LIVE', 'FULL SCAN', 'HUNTING EDGES', 'FINAL CUT'],
   ['POWERING UP', 'REAL-TIME LINES', 'DEEP ANALYSIS', 'LOCKING GOLD'],
   ['BOOTING SCAN', 'LOADING DATA', 'WEIGHING FORM', 'GOLD BOARD'],
-]
-
-const LINES_MSGS = [
-  'LOADING LIVE LINES',
-  'CONNECTING TO PRIZEPICKS',
-  'PULLING LIVE PROPS',
-  'FETCHING THE BOARD',
-  'SCANNING ALL SPORTS',
-  'GETTING REAL DATA',
-  'ALMOST READY',
 ]
 
 const FACTS = [
@@ -131,6 +104,7 @@ async function fetchAllLines(server) {
 }
 
 export default function Gold() {
+  const [allLines, setAllLines] = useState([])
   const [availableLeagues, setAvailableLeagues] = useState([])
   const [selectedLeague, setSelectedLeague] = useState('ALL')
   const [picksCache, setPicksCache] = useState({})
@@ -143,12 +117,6 @@ export default function Gold() {
   const [facts, setFacts] = useState(FACTS)
   const [factIdx, setFactIdx] = useState(0)
   const [factVisible, setFactVisible] = useState(true)
-  const [btnPulse, setBtnPulse] = useState(false)
-  const [linesMsgIdx, setLinesMsgIdx] = useState(0)
-  const [linesMsgVisible, setLinesMsgVisible] = useState(true)
-
-  // Use ref to always have fresh lines in callbacks
-  const linesRef = useRef([])
 
   const now = new Date()
   const currentTime = now.toLocaleTimeString('en-US', { timeZone: 'America/New_York', hour: 'numeric', minute: '2-digit', hour12: true })
@@ -157,20 +125,6 @@ export default function Gold() {
     initLines()
   }, [])
 
-  // Cycle loading messages during lines fetch
-  useEffect(() => {
-    if (!linesLoading) return
-    const interval = setInterval(() => {
-      setLinesMsgVisible(false)
-      setTimeout(() => {
-        setLinesMsgIdx(i => (i + 1) % LINES_MSGS.length)
-        setLinesMsgVisible(true)
-      }, 300)
-    }, 2000)
-    return () => clearInterval(interval)
-  }, [linesLoading])
-
-  // Cycle facts during AI analysis
   useEffect(() => {
     if (!loadingLeague) return
     const interval = setInterval(() => {
@@ -189,13 +143,10 @@ export default function Gold() {
     setFacts(shuffle(FACTS))
     setError(null)
     setSelectedLeague('ALL')
-    setBtnPulse(false)
-    setLinesMsgIdx(0)
-    setLinesMsgVisible(true)
-    linesRef.current = []
+    setAllLines([])
 
     const lines = await fetchAllLines(SERVER)
-    linesRef.current = lines
+    setAllLines(lines)
 
     const leagueSet = new Set(lines.map(l => (l.league || '').toUpperCase()).filter(Boolean))
     const ordered = LEAGUE_ORDER.filter(l => l === 'ALL' || leagueSet.has(l))
@@ -208,17 +159,15 @@ export default function Gold() {
       return
     }
 
-    setTimeout(() => setBtnPulse(true), 500)
+    // Pass lines directly — no stale state issue
+    await loadGoldForLeague('ALL', lines)
   }
 
-  async function loadGoldForLeague(league) {
-    const lns = linesRef.current
-    console.log('loadGoldForLeague called with', lns.length, 'lines for', league)
-    if (!lns || lns.length === 0) {
-      console.log('No lines available, reinitializing...')
-      await initLines()
-      return
-    }
+  async function loadGoldForLeague(league, lines) {
+    // Always use passed lines if available, fall back to state
+    const lns = lines || allLines
+    console.log('loadGoldForLeague', league, 'with', lns?.length, 'lines')
+    if (!lns || lns.length === 0) return
 
     const labels = STEP_LABELS[Math.floor(Math.random() * STEP_LABELS.length)]
     setStepLabels(labels)
@@ -226,7 +175,6 @@ export default function Gold() {
     setProgress(40)
     setStepIdx(2)
     setError(null)
-    setBtnPulse(false)
 
     try {
       const res = await fetch(`${SERVER}/gold`, {
@@ -244,13 +192,7 @@ export default function Gold() {
 
       const data = await res.json()
 
-      if (!res.ok) {
-        setPicksCache(prev => ({ ...prev, [league]: [] }))
-        setLoadingLeague(null)
-        return
-      }
-
-      if (!data.picks) {
+      if (!res.ok || !data.picks) {
         setPicksCache(prev => ({ ...prev, [league]: [] }))
         setLoadingLeague(null)
         return
@@ -270,11 +212,11 @@ export default function Gold() {
     setLoadingLeague(null)
   }
 
-  function handleTabSelect(league) {
+  async function handleTabSelect(league) {
     if (loadingLeague) return
     setSelectedLeague(league)
     if (picksCache[league] === undefined) {
-      setBtnPulse(true)
+      await loadGoldForLeague(league, allLines)
     }
   }
 
@@ -284,23 +226,19 @@ export default function Gold() {
     initLines()
   }
 
-  const isAnalyzing = loadingLeague === selectedLeague
-  const hasPicks = picksCache[selectedLeague] !== undefined
+  const isLoading = linesLoading || loadingLeague === selectedLeague
   const currentPicks = picksCache[selectedLeague] || []
-  const cta = CTA_LABELS[selectedLeague] || CTA_LABELS['ALL']
-  const leagueColor = LEAGUE_COLORS[selectedLeague] || '#f5c842'
 
   return (
     <div style={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
 
-      {/* Header */}
       <div style={{ padding: '18px 20px 0', display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', flexShrink: 0 }}>
         <div>
           <div style={{ fontFamily: 'var(--font-d)', fontSize: '28px', letterSpacing: '2px', lineHeight: 1, background: 'linear-gradient(90deg,#d4a017,#f5c842,#fff0a0)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>★ GOLD PICKS</div>
           <div style={{ fontSize: '11px', color: 'var(--text2)', marginTop: '3px' }}>90%+ confidence · Strongest plays available right now</div>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-          {!isAnalyzing && !linesLoading && (
+          {!isLoading && (
             <button onClick={handleRefresh} style={{ background: 'none', border: '1px solid var(--border2)', color: 'var(--text2)', fontFamily: 'var(--font)', fontSize: '11px', padding: '5px 12px', borderRadius: '20px', cursor: 'pointer', letterSpacing: '1px', WebkitTapHighlightColor: 'transparent' }}>Refresh</button>
           )}
           <div style={{ display: 'flex', alignItems: 'center', gap: '6px', background: 'rgba(245,200,66,0.1)', border: '1px solid rgba(245,200,66,0.25)', color: 'var(--gold)', fontSize: '11px', fontWeight: 600, letterSpacing: '1.5px', textTransform: 'uppercase', padding: '5px 10px', borderRadius: '20px' }}>
@@ -309,37 +247,15 @@ export default function Gold() {
         </div>
       </div>
 
-      {/* Lines loading with cycling words */}
-      {linesLoading && (
-        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '20px' }}>
-          <div style={{ display: 'flex', gap: '8px' }}>
-            {[0, 1, 2].map(i => (
-              <div key={i} style={{ width: '8px', height: '8px', borderRadius: '50%', background: 'var(--gold)', animation: `dotPulse 1.3s ${i * 0.2}s infinite` }} />
-            ))}
-          </div>
-          <div style={{
-            fontFamily: 'var(--font-d)', fontSize: '18px', letterSpacing: '3px', color: 'var(--gold)',
-            opacity: linesMsgVisible ? 1 : 0, transition: 'opacity 0.3s ease',
-            minHeight: '28px', textAlign: 'center'
-          }}>
-            {LINES_MSGS[linesMsgIdx]}
-          </div>
-          <div style={{ fontSize: '12px', color: 'var(--text2)', textAlign: 'center', maxWidth: '260px', lineHeight: 1.6 }}>
-            Pulling live props from PrizePicks...
-          </div>
-        </div>
-      )}
-
-      {/* League tabs */}
-      {!linesLoading && availableLeagues.length > 0 && (
+      {availableLeagues.length > 0 && (
         <div style={{ padding: '14px 20px 0', flexShrink: 0 }}>
           <div style={{ overflowX: 'auto', paddingBottom: '6px' }}>
             <div style={{ display: 'flex', gap: '8px', minWidth: 'max-content' }}>
               {availableLeagues.map(league => {
                 const isActive = selectedLeague === league
+                const isThisLoading = loadingLeague === league
                 const color = LEAGUE_COLORS[league] || '#7a8aaa'
                 const cached = picksCache[league] || []
-                const isDone = picksCache[league] !== undefined
                 return (
                   <button
                     key={league}
@@ -362,10 +278,11 @@ export default function Gold() {
                   >
                     <span style={{ fontSize: '9px', color: '#f5c842' }}>★</span>
                     {league}
-                    {isDone && cached.length > 0 && (
+                    {isThisLoading && <span style={{ fontSize: '10px', animation: 'spin 1s linear infinite', display: 'inline-block' }}>⟳</span>}
+                    {picksCache[league] !== undefined && cached.length > 0 && !isThisLoading && (
                       <span style={{ background: isActive ? color : 'var(--border2)', color: isActive ? '#000' : 'var(--text3)', fontSize: '10px', fontWeight: 700, padding: '1px 6px', borderRadius: '10px' }}>{cached.length}</span>
                     )}
-                    {isDone && cached.length === 0 && (
+                    {picksCache[league] !== undefined && cached.length === 0 && !isThisLoading && (
                       <span style={{ fontSize: '9px', color: 'var(--text3)' }}>✓</span>
                     )}
                   </button>
@@ -376,8 +293,7 @@ export default function Gold() {
         </div>
       )}
 
-      {/* Analyzing */}
-      {isAnalyzing && (
+      {isLoading && (
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '40px 24px', gap: '28px' }}>
           <div style={{ display: 'flex', alignItems: 'center' }}>
             {[0, 1, 2, 3].map(i => (
@@ -413,58 +329,14 @@ export default function Gold() {
         </div>
       )}
 
-      {/* CTA button */}
-      {!linesLoading && !isAnalyzing && !hasPicks && !error && (
-        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '40px', gap: '20px' }}>
-          <div style={{ textAlign: 'center' }}>
-            <div style={{ fontSize: '52px', marginBottom: '10px' }}>{cta.icon}</div>
-            <div style={{ fontSize: '12px', color: 'var(--text2)', letterSpacing: '1px', textTransform: 'uppercase' }}>{cta.sub}</div>
-          </div>
-          <button
-            onClick={() => loadGoldForLeague(selectedLeague)}
-            style={{
-              background: 'linear-gradient(135deg,rgba(245,200,66,0.12),rgba(245,200,66,0.05))',
-              border: '2px solid #f5c842',
-              color: '#f5c842',
-              fontFamily: 'var(--font-d)',
-              fontSize: '20px',
-              letterSpacing: '3px',
-              padding: '18px 44px',
-              borderRadius: '16px',
-              cursor: 'pointer',
-              transition: 'all 0.2s',
-              animation: btnPulse ? 'goldCtaPulse 2s ease infinite' : 'none',
-              boxShadow: '0 0 24px rgba(245,200,66,0.15)',
-              WebkitTapHighlightColor: 'transparent',
-              display: 'flex', alignItems: 'center', gap: '12px',
-              touchAction: 'manipulation',
-            }}
-            onMouseEnter={e => {
-              e.currentTarget.style.background = 'rgba(245,200,66,0.2)'
-              e.currentTarget.style.boxShadow = '0 0 44px rgba(245,200,66,0.35)'
-              e.currentTarget.style.transform = 'scale(1.03)'
-            }}
-            onMouseLeave={e => {
-              e.currentTarget.style.background = 'linear-gradient(135deg,rgba(245,200,66,0.12),rgba(245,200,66,0.05))'
-              e.currentTarget.style.boxShadow = '0 0 24px rgba(245,200,66,0.15)'
-              e.currentTarget.style.transform = 'scale(1)'
-            }}
-          >
-            {cta.icon} {cta.text} →
-          </button>
-        </div>
-      )}
-
-      {/* Error */}
-      {error && !isAnalyzing && (
+      {error && !isLoading && (
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '40px', textAlign: 'center' }}>
           <div style={{ fontSize: '14px', color: 'var(--text2)', marginBottom: '16px', lineHeight: 1.6 }}>{error}</div>
           <button onClick={handleRefresh} style={{ background: 'var(--accent2)', border: 'none', color: '#fff', fontFamily: 'var(--font)', fontSize: '13px', padding: '10px 24px', borderRadius: '10px', cursor: 'pointer' }}>Retry</button>
         </div>
       )}
 
-      {/* Gold picks */}
-      {!isAnalyzing && !error && hasPicks && currentPicks.length > 0 && (
+      {!isLoading && !error && currentPicks.length > 0 && (
         <div style={{ flex: 1, overflowY: 'auto', padding: '14px 20px 24px' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '16px' }}>
             <span style={{ fontFamily: 'var(--font-d)', fontSize: '16px', letterSpacing: '2px', color: '#f5c842' }}>★ GOLD — {selectedLeague}</span>
@@ -477,8 +349,7 @@ export default function Gold() {
         </div>
       )}
 
-      {/* No gold */}
-      {!isAnalyzing && !error && hasPicks && currentPicks.length === 0 && (
+      {!isLoading && !error && picksCache[selectedLeague] !== undefined && currentPicks.length === 0 && (
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '40px', textAlign: 'center' }}>
           <div style={{ fontSize: '40px', marginBottom: '16px' }}>★</div>
           <div style={{ fontFamily: 'var(--font-d)', fontSize: '22px', letterSpacing: '2px', color: 'var(--text2)', marginBottom: '8px' }}>NO GOLD FOR {selectedLeague}</div>
@@ -488,13 +359,7 @@ export default function Gold() {
           {selectedLeague !== 'ALL' && (
             <button onClick={() => handleTabSelect('ALL')} style={{ background: 'none', border: '1px solid var(--border2)', color: 'var(--text2)', fontFamily: 'var(--font)', fontSize: '13px', padding: '8px 20px', borderRadius: '10px', cursor: 'pointer', marginBottom: '10px' }}>Check All Sports</button>
           )}
-          <button
-            onClick={() => {
-              setPicksCache(prev => { const n = { ...prev }; delete n[selectedLeague]; return n })
-              setTimeout(() => loadGoldForLeague(selectedLeague), 50)
-            }}
-            style={{ background: 'none', border: '1px solid rgba(245,200,66,0.3)', color: '#f5c842', fontFamily: 'var(--font)', fontSize: '13px', padding: '8px 20px', borderRadius: '10px', cursor: 'pointer' }}
-          >
+          <button onClick={() => { setPicksCache(prev => { const n = { ...prev }; delete n[selectedLeague]; return n }); loadGoldForLeague(selectedLeague, allLines) }} style={{ background: 'none', border: '1px solid rgba(245,200,66,0.3)', color: '#f5c842', fontFamily: 'var(--font)', fontSize: '13px', padding: '8px 20px', borderRadius: '10px', cursor: 'pointer' }}>
             Try Again
           </button>
         </div>
@@ -503,10 +368,6 @@ export default function Gold() {
       <style>{`
         @keyframes livePulse{0%,100%{opacity:1;}50%{opacity:0.3;}}
         @keyframes dotPulse{0%,80%,100%{opacity:0.2;transform:scale(1);}40%{opacity:1;transform:scale(1.2);}}
-        @keyframes goldCtaPulse{
-          0%,100%{box-shadow:0 0 24px rgba(245,200,66,0.15),0 0 0 0 transparent;}
-          50%{box-shadow:0 0 44px rgba(245,200,66,0.4),0 0 0 8px transparent;}
-        }
         @keyframes spin{from{transform:rotate(0deg);}to{transform:rotate(360deg);}}
       `}</style>
     </div>
