@@ -97,7 +97,7 @@ app.get('/prizepicks/all', async (req, res) => {
       return res.json(ppCache.data)
     }
     const target = encodeURIComponent(`https://api.prizepicks.com/projections?per_page=250&single_stat=true`)
-    const response = await fetch(`https://api.scraperapi.com?api_key=${process.env.SCRAPER_API_KEY}&url=${target}`)
+    const response = await fetch(`https://api.scraperapi.com?api_key=${process.env.SCRAPER_API_KEY}&url=${target}&ultra_premium=true`)
     const data = await response.json()
     ppCache = { data, ts: now }
     res.json(data)
@@ -198,7 +198,7 @@ app.post('/gold', async (req, res) => {
     ).join('\n')
 
     const spreadRule = league
-      ? `All picks must be from ${league}. Only include lines you are 90%+ confident in.`
+      ? `All picks must be from ${league}.`
       : `Prioritize NBA, MLB, NHL, NFL, esports. Spread across AT LEAST 2 different leagues. Max 2 picks per league.`
 
     const response = await fetch('https://api.anthropic.com/v1/messages', {
@@ -207,27 +207,29 @@ app.post('/gold', async (req, res) => {
       body: JSON.stringify({
         model: 'claude-sonnet-4-20250514',
         max_tokens: 4000,
-        system: `You are a PrizePicks prop analyst. Output ONLY a valid JSON array. No text before or after. Start with [ end with ]. If no picks qualify at 90%+ confidence, return [].`,
+        system: `You are a PrizePicks prop analyst. Output ONLY a valid JSON array. No text before or after. Start with [ end with ].`,
         messages: [{
           role: 'user',
           content: `Current time: ${currentTime} ET
 
-These are REAL live PrizePicks lines. Find only the highest confidence picks (90%+). Copy line numbers exactly:
+These are REAL live PrizePicks lines. Find the strongest picks available. Copy line numbers exactly — never change them:
 
 ${spreadRule}
 
 ${linesText}
 
-Output ONLY a JSON array. If no picks qualify return [].
-Format: [{"id":1,"name":"exact player name","meta":"League · Team","stat":"exact stat","val":"exact line number","dir":"HIGHER","conf":92,"sport":"NBA","league":"NBA","initials":"PN","time":"exact time","date":"exact date","bull":"reason","bear":"risk","record":"Hit in 12 of last 15 games","cats":[{"n":"stat","p":92}]}]
+Find your top 3-5 highest confidence picks. You MUST always return at least 2 picks — never return an empty array. Use your knowledge of each player's recent performance to write a specific record stat.
+
+Output ONLY this JSON array:
+[{"id":1,"name":"exact player name","meta":"League · Team","stat":"exact stat","val":"exact line number","dir":"HIGHER","conf":92,"sport":"NBA","league":"NBA","initials":"PN","time":"exact time","date":"exact date","bull":"specific reason why this hits","bear":"real risk factor","record":"Hit this line in 12 of his last 15 games","cats":[{"n":"stat name","p":92}]}]
 
 Rules:
 - Copy line numbers EXACTLY — never change them
-- Only include picks 90%+ confident
-- dir is HIGHER or LOWER based on clear evidence
-- record: specific recent performance
+- dir is HIGHER or LOWER — based on real statistical evidence, never guess
+- conf is 50-95
+- record: MUST be specific like "Hit in 11 of last 14 games" or "Averaging well above this line over last 10 games" — never generic
 - NEVER pick the same player twice
-- Return [] if nothing qualifies`
+- Always return at least 2 picks`
         }]
       })
     })
@@ -242,7 +244,7 @@ Rules:
     if (start === -1 || end === -1) return res.json({ picks: [] })
 
     const parsed = JSON.parse(textBlock.text.slice(start, end + 1))
-    const picks = validateLines(dedupe(normalizePicks(parsed)), rawLines).filter(p => p.conf >= 90)
+    const picks = validateLines(dedupe(normalizePicks(parsed)), rawLines).filter(p => p.conf >= 85)
     console.log('Got', picks.length, 'gold picks')
     res.json({ picks })
   } catch (e) {

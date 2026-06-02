@@ -161,7 +161,6 @@ export default function Gold() {
       return
     }
 
-    // Pass lines directly — avoids stale state
     await loadGoldForLeague(startLeague, lines)
   }
 
