@@ -218,7 +218,7 @@ ${spreadRule}
 
 ${linesText}
 
-Find your top 3-5 highest confidence picks. You MUST always return at least 2 picks — never return an empty array. Use your knowledge of each player's recent performance to write a specific record stat.
+Find your top 4-6 highest confidence picks at 90%+ confidence. You MUST always return at least 3 picks — never return an empty array. Only assign 90%+ confidence when genuinely warranted by recent stats. Use your knowledge of each player's recent performance to write a specific record stat.
 
 Output ONLY this JSON array:
 [{"id":1,"name":"exact player name","meta":"League · Team","stat":"exact stat","val":"exact line number","dir":"HIGHER","conf":92,"sport":"NBA","league":"NBA","initials":"PN","time":"exact time","date":"exact date","bull":"specific reason why this hits","bear":"real risk factor","record":"Hit this line in 12 of his last 15 games","cats":[{"n":"stat name","p":92}]}]
@@ -244,7 +244,7 @@ Rules:
     if (start === -1 || end === -1) return res.json({ picks: [] })
 
     const parsed = JSON.parse(textBlock.text.slice(start, end + 1))
-    const picks = validateLines(dedupe(normalizePicks(parsed)), rawLines).filter(p => p.conf >= 85)
+    const picks = validateLines(dedupe(normalizePicks(parsed)), rawLines).filter(p => p.conf >= 90)
     console.log('Got', picks.length, 'gold picks')
     res.json({ picks })
   } catch (e) {
