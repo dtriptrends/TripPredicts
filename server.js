@@ -12,39 +12,6 @@ const sleep = ms => new Promise(r => setTimeout(r, ms))
 let ppCache = { data: null, ts: 0 }
 const CACHE_TTL = 5 * 60 * 1000
 
-async function scrape(url) {
-  const target = encodeURIComponent(url)
-  for (let attempt = 0; attempt < 3; attempt++) {
-    try {
-      if (attempt > 0) await new Promise(r => setTimeout(r, 3000 * attempt))
-      const response = await fetch(
-        `https://api.scraperapi.com?api_key=${process.env.SCRAPER_API_KEY}&url=${target}&render=false&retry_404=true`
-      )
-      const text = await response.text()
-      if (!text || text.startsWith('Request') || text.startsWith('<') || text.startsWith('{\"appId\"')) {
-        throw new Error('ScraperAPI returned invalid response: ' + text.slice(0, 80))
-      }
-      return JSON.parse(text)
-    } catch (e) {
-      console.log(`Scrape attempt ${attempt + 1} failed:`, e.message)
-      if (attempt === 2) throw e
-    }
-  }
-}
-
-async function warmCache() {
-  try {
-    console.log('Warming PrizePicks cache on boot...')
-    const data = await scrape(`https://api.prizepicks.com/projections?per_page=250&single_stat=true&state_code=VA&market=prizepicks&game_mode=pickem`)
-    ppCache = { data, ts: Date.now() }
-    console.log('Cache warmed successfully')
-  } catch (e) {
-    console.log('Cache warm failed:', e.message)
-  }
-}
-
-warmCache()
-
 function sortLines(rawLines, league) {
   if (!rawLines) return []
   const PRIORITY = { 'NBA': 1, 'MLB': 2, 'NHL': 3, 'NFL': 4, 'CS2': 5, 'LOL': 5, 'VALORANT': 5, 'COD': 5 }
@@ -126,17 +93,24 @@ app.get('/prizepicks/all', async (req, res) => {
   try {
     const now = Date.now()
     if (ppCache.data && now - ppCache.ts < CACHE_TTL) {
-      console.log('Serving PrizePicks from cache')
+      console.log('Serving from cache')
       return res.json(ppCache.data)
     }
-    const data = await scrape(`https://api.prizepicks.com/projections?per_page=250&single_stat=true`)
+    const target = encodeURIComponent(`https://api.prizepicks.com/projections?per_page=250&single_stat=true`)
+    const response = await fetch(`https://api.scraperapi.com?api_key=${process.env.SCRAPER_API_KEY}&url=${target}`)
+    const text = await response.text()
+    if (!text || text.trimStart().startsWith('<') || text.startsWith('Request')) {
+      if (ppCache.data) {
+        console.log('PrizePicks blocked, serving cache')
+        return res.json(ppCache.data)
+      }
+      throw new Error('PrizePicks is blocking requests right now. Try again in a moment.')
+    }
+    const data = JSON.parse(text)
     ppCache = { data, ts: now }
     res.json(data)
   } catch (e) {
-    if (ppCache.data) {
-      console.log('Serving stale cache after error')
-      return res.json(ppCache.data)
-    }
+    if (ppCache.data) return res.json(ppCache.data)
     res.status(500).json({ error: e.message })
   }
 })
@@ -144,8 +118,11 @@ app.get('/prizepicks/all', async (req, res) => {
 app.get('/prizepicks/:leagueId', async (req, res) => {
   try {
     const { leagueId } = req.params
-    const data = await scrape(`https://api.prizepicks.com/projections?league_id=${leagueId}&per_page=50&single_stat=true`)
-    res.json(data)
+    const target = encodeURIComponent(`https://api.prizepicks.com/projections?league_id=${leagueId}&per_page=50&single_stat=true`)
+    const response = await fetch(`https://api.scraperapi.com?api_key=${process.env.SCRAPER_API_KEY}&url=${target}`)
+    const text = await response.text()
+    if (!text || text.trimStart().startsWith('<')) throw new Error('Blocked')
+    res.json(JSON.parse(text))
   } catch (e) {
     res.status(500).json({ error: e.message })
   }
