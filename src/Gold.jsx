@@ -145,36 +145,58 @@ export default function Gold() {
     setSelectedLeague(startLeague)
     await new Promise(r => setTimeout(r, 200))
     setProgress(15); setStepIdx(1)
+
     const lines = await fetchAllLines(SERVER)
     setAllLines(lines)
     setProgress(35)
+
     const leagueSet = new Set(lines.map(l => (l.league || '').toUpperCase()).filter(Boolean))
     const ordered = LEAGUE_ORDER.filter(l => l === 'ALL' || leagueSet.has(l))
     const others = [...leagueSet].filter(l => l && !LEAGUE_ORDER.includes(l))
     setAvailableLeagues([...ordered, ...others])
     setLinesLoading(false)
-    if (lines.length === 0) { setError('No live props on PrizePicks right now. Check back soon.'); return }
+
+    if (lines.length === 0) {
+      setError('No live props on PrizePicks right now. Check back soon.')
+      return
+    }
+
+    // Pass lines directly — avoids stale state
     await loadGoldForLeague(startLeague, lines)
   }
 
   async function loadGoldForLeague(league, lines) {
     const lns = lines || allLines
     if (!lns || lns.length === 0) return
+
     setStepLabels(STEP_LABELS[Math.floor(Math.random() * STEP_LABELS.length)])
-    setLoadingLeague(league); setProgress(40); setStepIdx(2); setError(null)
+    setLoadingLeague(league)
+    setProgress(40); setStepIdx(2); setError(null)
+
     try {
       const res = await fetch(`${SERVER}/gold`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ currentTime, lines: lns, league: league === 'ALL' ? null : league })
+        body: JSON.stringify({
+          currentTime,
+          lines: lns,
+          league: league === 'ALL' ? null : league
+        })
       })
+
       setProgress(88); setStepIdx(3)
       const data = await res.json()
-      if (!res.ok) { setPicksCache(prev => ({ ...prev, [league]: [] })); setLoadingLeague(null); return }
-      if (!data.picks) { setPicksCache(prev => ({ ...prev, [league]: [] })); setLoadingLeague(null); return }
+
+      if (!res.ok || !data.picks) {
+        setPicksCache(prev => ({ ...prev, [league]: [] }))
+        setLoadingLeague(null)
+        return
+      }
+
       const imageMap = {}
       lns.forEach(l => { if (l.image) imageMap[l.name] = l.image })
       data.picks.forEach(p => { if (!p.image && imageMap[p.name]) p.image = imageMap[p.name] })
+
       setProgress(100)
       await new Promise(r => setTimeout(r, 300))
       setPicksCache(prev => ({ ...prev, [league]: data.picks }))
@@ -188,7 +210,9 @@ export default function Gold() {
   async function handleTabSelect(league) {
     if (loadingLeague) return
     setSelectedLeague(league)
-    if (picksCache[league] === undefined) await loadGoldForLeague(league)
+    if (picksCache[league] === undefined) {
+      await loadGoldForLeague(league, allLines)
+    }
   }
 
   function handleRefresh() {
@@ -200,6 +224,7 @@ export default function Gold() {
 
   return (
     <div style={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+
       <div style={{ padding: '18px 20px 0', display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', flexShrink: 0 }}>
         <div>
           <div style={{ fontFamily: 'var(--font-d)', fontSize: '28px', letterSpacing: '2px', lineHeight: 1, background: 'linear-gradient(90deg,#d4a017,#f5c842,#fff0a0)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>★ GOLD PICKS</div>
