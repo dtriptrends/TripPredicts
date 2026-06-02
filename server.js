@@ -14,31 +14,32 @@ const CACHE_TTL = 5 * 60 * 1000
 
 async function scrape(url) {
   const target = encodeURIComponent(url)
-  const response = await fetch(
-    `https://api.scraperapi.com?api_key=${process.env.SCRAPER_API_KEY}&url=${target}&render=false&retry_404=true`
-  )
-  const text = await response.text()
-  return JSON.parse(text)
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      if (attempt > 0) await new Promise(r => setTimeout(r, 3000 * attempt))
+      const response = await fetch(
+        `https://api.scraperapi.com?api_key=${process.env.SCRAPER_API_KEY}&url=${target}&render=false&retry_404=true`
+      )
+      const text = await response.text()
+      if (!text || text.startsWith('Request') || text.startsWith('<') || text.startsWith('{\"appId\"')) {
+        throw new Error('ScraperAPI returned invalid response: ' + text.slice(0, 80))
+      }
+      return JSON.parse(text)
+    } catch (e) {
+      console.log(`Scrape attempt ${attempt + 1} failed:`, e.message)
+      if (attempt === 2) throw e
+    }
+  }
 }
-
 
 async function warmCache() {
   try {
     console.log('Warming PrizePicks cache on boot...')
-    for (let attempt = 0; attempt < 3; attempt++) {
-      try {
-        if (attempt > 0) await new Promise(r => setTimeout(r, 3000 * attempt))
-        const data = await scrape(`https://api.prizepicks.com/projections?per_page=250&single_stat=true`)
-        ppCache = { data, ts: Date.now() }
-        console.log('Cache warmed successfully')
-        return
-      } catch (e) {
-        console.log(`Warm attempt ${attempt + 1} failed:`, e.message)
-      }
-    }
-    console.log('Cache warm failed after 3 attempts — will retry on first request')
+    const data = await scrape(`https://api.prizepicks.com/projections?per_page=250&single_stat=true`)
+    ppCache = { data, ts: Date.now() }
+    console.log('Cache warmed successfully')
   } catch (e) {
-    console.log('Cache warm error:', e.message)
+    console.log('Cache warm failed:', e.message)
   }
 }
 
@@ -133,7 +134,7 @@ app.get('/prizepicks/all', async (req, res) => {
     res.json(data)
   } catch (e) {
     if (ppCache.data) {
-      console.log('ScraperAPI failed, serving stale cache')
+      console.log('Serving stale cache after error')
       return res.json(ppCache.data)
     }
     res.status(500).json({ error: e.message })
