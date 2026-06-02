@@ -40,22 +40,17 @@ const FACTS = [
   'Recent form matters more than season averages when it comes to prop bets.',
   'The AI scores every line from 50 to 95. Gold means 90 or above.',
   'If the confidence is not there, no pick is made. Quality always beats quantity.',
-  'Bull case and bear case are on every gold card so you know what you are getting into.',
   'Trip Predicts covers NBA, MLB, NHL, NFL, CS2, LoL, Valorant and more.',
   'Lines are fetched fresh every time so you never see stale or outdated props.',
   'The AI never defaults to HIGHER. Direction is set by the data every time.',
-  'A player on a 5-game hot streak against a weak defense is a textbook gold setup.',
   'Stat category breakdown is on every card so you can verify the logic yourself.',
   'Only pre-game props starting within the next 36 hours are ever shown.',
   'Trip Predicts is free to use. No account, no paywall, just open and get picks.',
   'Every gold pick includes a risk factor so you know what could go wrong.',
-  'Trip Predicts was built to give everyday bettors access to real analytical tools.',
   'High usage players hit volume-based lines more consistently over a full season.',
-  'Pace of play is one of the most underrated factors in NBA and esports props.',
   'Rare but powerful. These are the plays worth sizing up when they appear.',
   'Trip Predicts is powered by Claude, one of the most capable AI models available.',
   'Gold picks are never forced. If none qualify today, the board stays empty.',
-  'Every fact you are reading right now was written to help you bet smarter.',
 ]
 
 function shuffle(arr) {
@@ -130,7 +125,7 @@ export default function Gold() {
   const currentTime = now.toLocaleTimeString('en-US', { timeZone: 'America/New_York', hour: 'numeric', minute: '2-digit', hour12: true })
 
   useEffect(() => {
-    initLines()
+    initLines('ALL')
   }, [])
 
   useEffect(() => {
@@ -146,7 +141,7 @@ export default function Gold() {
     return () => clearInterval(interval)
   }, [linesLoading, loadingLeague, facts])
 
-  async function initLines() {
+  async function initLines(startLeague = 'ALL') {
     setLinesLoading(true)
     setPicksCache({})
     setFacts(shuffle(FACTS))
@@ -156,7 +151,7 @@ export default function Gold() {
     setFactIdx(0)
     setFactVisible(true)
     setError(null)
-    setSelectedLeague('ALL')
+    setSelectedLeague(startLeague)
 
     await new Promise(r => setTimeout(r, 200))
     setProgress(15)
@@ -177,7 +172,7 @@ export default function Gold() {
       return
     }
 
-    await loadGoldForLeague('ALL', lines)
+    await loadGoldForLeague(startLeague, lines)
   }
 
   async function loadGoldForLeague(league, lines) {
@@ -206,7 +201,20 @@ export default function Gold() {
       setStepIdx(3)
 
       const data = await res.json()
-      if (!data.picks) throw new Error(data.error || 'No gold picks found')
+
+      if (!res.ok) {
+        console.error('Gold error response:', data)
+        setPicksCache(prev => ({ ...prev, [league]: [] }))
+        setError(data.error || 'Could not load gold picks. Try refreshing.')
+        setLoadingLeague(null)
+        return
+      }
+
+      if (!data.picks) {
+        setPicksCache(prev => ({ ...prev, [league]: [] }))
+        setLoadingLeague(null)
+        return
+      }
 
       const imageMap = {}
       lns.forEach(l => { if (l.image) imageMap[l.name] = l.image })
@@ -216,6 +224,7 @@ export default function Gold() {
       await new Promise(r => setTimeout(r, 300))
       setPicksCache(prev => ({ ...prev, [league]: data.picks }))
     } catch (e) {
+      console.error('Gold fetch error:', e.message)
       setPicksCache(prev => ({ ...prev, [league]: [] }))
     }
     setLoadingLeague(null)
@@ -229,9 +238,9 @@ export default function Gold() {
     }
   }
 
+  // Refresh stays on current tab
   function handleRefresh() {
-    setSelectedLeague('ALL')
-    initLines()
+    initLines(selectedLeague)
   }
 
   const isLoading = linesLoading || loadingLeague === selectedLeague
@@ -240,7 +249,6 @@ export default function Gold() {
   return (
     <div style={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
 
-      {/* Header */}
       <div style={{ padding: '18px 20px 0', display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', flexShrink: 0 }}>
         <div>
           <div style={{ fontFamily: 'var(--font-d)', fontSize: '28px', letterSpacing: '2px', lineHeight: 1, background: 'linear-gradient(90deg,#d4a017,#f5c842,#fff0a0)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>★ GOLD PICKS</div>
@@ -256,7 +264,6 @@ export default function Gold() {
         </div>
       </div>
 
-      {/* League tabs */}
       {availableLeagues.length > 0 && (
         <div style={{ padding: '14px 20px 0', flexShrink: 0 }}>
           <div style={{ overflowX: 'auto', paddingBottom: '6px' }}>
@@ -282,14 +289,13 @@ export default function Gold() {
                       transition: 'all 0.2s',
                       display: 'flex', alignItems: 'center', gap: '5px',
                       whiteSpace: 'nowrap',
-                      opacity: loadingLeague && !isActive ? 0.5 : 1
+                      opacity: loadingLeague && !isActive ? 0.5 : 1,
+                      WebkitTapHighlightColor: 'transparent',
                     }}
                   >
                     <span style={{ fontSize: '9px', color: '#f5c842' }}>★</span>
                     {league}
-                    {isThisLoading && (
-                      <span style={{ fontSize: '10px', animation: 'spin 1s linear infinite', display: 'inline-block' }}>⟳</span>
-                    )}
+                    {isThisLoading && <span style={{ fontSize: '10px', animation: 'spin 1s linear infinite', display: 'inline-block' }}>⟳</span>}
                     {cached.length > 0 && !isThisLoading && (
                       <span style={{
                         background: isActive ? color : 'var(--border2)',
@@ -306,7 +312,6 @@ export default function Gold() {
         </div>
       )}
 
-      {/* Loading */}
       {isLoading && (
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '40px 24px', gap: '28px' }}>
           <div style={{ display: 'flex', alignItems: 'center' }}>
@@ -324,13 +329,7 @@ export default function Gold() {
                 }}>
                   {stepIdx > i ? '✓' : i + 1}
                 </div>
-                {i < 3 && (
-                  <div style={{
-                    width: '44px', height: '2px',
-                    background: stepIdx > i ? 'var(--gold)' : 'var(--border)',
-                    transition: 'background 0.6s ease'
-                  }} />
-                )}
+                {i < 3 && <div style={{ width: '44px', height: '2px', background: stepIdx > i ? 'var(--gold)' : 'var(--border)', transition: 'background 0.6s ease' }} />}
               </React.Fragment>
             ))}
           </div>
@@ -340,27 +339,15 @@ export default function Gold() {
               <div style={{ fontFamily: 'var(--font-c)', fontSize: '16px', fontWeight: 700, color: 'var(--text2)' }}>{progress}%</div>
             </div>
             <div style={{ height: '6px', background: 'var(--bg3)', borderRadius: '3px', overflow: 'hidden', border: '1px solid var(--border)' }}>
-              <div style={{
-                height: '100%',
-                background: 'linear-gradient(90deg,#d4a017,#f5c842,#fff0a0)',
-                borderRadius: '3px',
-                width: `${progress}%`,
-                transition: 'width 0.9s cubic-bezier(0.16,1,0.3,1)'
-              }} />
+              <div style={{ height: '100%', background: 'linear-gradient(90deg,#d4a017,#f5c842,#fff0a0)', borderRadius: '3px', width: `${progress}%`, transition: 'width 0.9s cubic-bezier(0.16,1,0.3,1)' }} />
             </div>
-            <div style={{
-              fontSize: '13px', color: 'var(--text2)', marginTop: '18px',
-              lineHeight: 1.7, textAlign: 'center', minHeight: '44px',
-              opacity: factVisible ? 1 : 0,
-              transition: 'opacity 0.3s ease'
-            }}>
+            <div style={{ fontSize: '13px', color: 'var(--text2)', marginTop: '18px', lineHeight: 1.7, textAlign: 'center', minHeight: '44px', opacity: factVisible ? 1 : 0, transition: 'opacity 0.3s ease' }}>
               {facts[factIdx]}
             </div>
           </div>
         </div>
       )}
 
-      {/* Error */}
       {error && !isLoading && (
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '40px', textAlign: 'center' }}>
           <div style={{ fontSize: '14px', color: 'var(--text2)', marginBottom: '16px', lineHeight: 1.6 }}>{error}</div>
@@ -368,7 +355,6 @@ export default function Gold() {
         </div>
       )}
 
-      {/* Gold picks grid */}
       {!isLoading && !error && currentPicks.length > 0 && (
         <div style={{ flex: 1, overflowY: 'auto', padding: '14px 20px 24px' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '16px' }}>
@@ -382,7 +368,6 @@ export default function Gold() {
         </div>
       )}
 
-      {/* No gold for this league */}
       {!isLoading && !error && currentPicks.length === 0 && availableLeagues.length > 0 && (
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '40px', textAlign: 'center' }}>
           <div style={{ fontSize: '40px', marginBottom: '16px' }}>★</div>
