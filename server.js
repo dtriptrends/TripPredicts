@@ -35,7 +35,7 @@ async function scrape(url) {
 async function warmCache() {
   try {
     console.log('Warming PrizePicks cache on boot...')
-    const data = await scrape(`https://api.prizepicks.com/projections?per_page=250&single_stat=true`)
+    const data = await scrape(`https://api.prizepicks.com/projections?per_page=250&single_stat=true&state_code=VA&market=prizepicks&game_mode=pickem`)
     ppCache = { data, ts: Date.now() }
     console.log('Cache warmed successfully')
   } catch (e) {
