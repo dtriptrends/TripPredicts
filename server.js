@@ -50,6 +50,7 @@ function normalizePicks(raw) {
     initials: p.initials || (p.name || 'XX').split(' ').map(w => w[0]).join('').substring(0, 2).toUpperCase(),
     bull: p.bull || 'Strong pick based on current form.',
     bear: p.bear || 'Variance possible.',
+    record: p.record || null,
     cats: p.cats || [{ n: p.stat || 'Points', p: Number(p.conf || 75) }],
     time: p.time || null,
     date: p.date || null
@@ -69,12 +70,10 @@ function dedupe(picks) {
 function validateLines(picks, rawLines) {
   if (!rawLines || rawLines.length === 0) return picks
   return picks.map(p => {
-    // Try exact name + stat match first
     let match = rawLines.find(l =>
       l.name.toLowerCase() === p.name.toLowerCase() &&
       l.stat.toLowerCase() === p.stat.toLowerCase()
     )
-    // Fallback: name only — catches stat name mismatches
     if (!match) {
       match = rawLines.find(l => l.name.toLowerCase() === p.name.toLowerCase())
     }
@@ -147,19 +146,22 @@ app.post('/picks', async (req, res) => {
           role: 'user',
           content: `Current time: ${currentTime} ET
 
-These are REAL live PrizePicks lines. Use ONLY these exact player names and exact line numbers — do not change any numbers under any circumstances. The line number after the colon is the exact value to use:
+These are REAL live PrizePicks lines. Use ONLY these exact player names and exact line numbers — copy the number after the colon exactly, do not change it:
 
 ${linesText}
 
 ${spreadRule}
 
+For each pick, determine direction (HIGHER or LOWER) based on concrete statistical evidence from the player's recent form and matchup. Once you decide a direction, commit to it — do not guess or alternate on refreshes.
+
 Output ONLY this JSON array:
-[{"id":1,"name":"exact player name from above","meta":"League · Team","stat":"exact stat from above","val":"exact line number from above","dir":"HIGHER","conf":88,"sport":"NBA","league":"NBA","initials":"PN","time":"exact time from above","date":"exact date from above","bull":"specific reason","bear":"real risk","cats":[{"n":"stat name","p":88}]}]
+[{"id":1,"name":"exact player name","meta":"League · Team","stat":"exact stat","val":"exact line number","dir":"HIGHER","conf":88,"sport":"NBA","league":"NBA","initials":"PN","time":"exact time","date":"exact date","bull":"specific reason","bear":"real risk","record":"12 of last 15 games cleared this line","cats":[{"n":"stat","p":88}]}]
 
 Rules:
-- Copy the line number EXACTLY as it appears after the colon in the data above
-- dir is HIGHER or LOWER based on analysis — never a default
+- Copy the line number EXACTLY as it appears — never change it
+- dir must be HIGHER or LOWER based on clear statistical evidence — never guess
 - conf is 50-95
+- record: a short specific statement like "11 of last 14 games hit this line" or "Averaging well above this line recently" — use your training knowledge about the player
 - NEVER pick the same player more than once
 - Give exactly ${pickCount} picks`
         }]
@@ -210,19 +212,22 @@ app.post('/gold', async (req, res) => {
           role: 'user',
           content: `Current time: ${currentTime} ET
 
-These are REAL live PrizePicks lines. Find only the highest confidence picks (90%+). Use ONLY these exact player names and exact line numbers — do not change any numbers. The line number after the colon is the exact value to use:
+These are REAL live PrizePicks lines. Find only the highest confidence picks (90%+). Copy line numbers exactly — do not change them:
 
 ${spreadRule}
+
+For each pick, determine direction (HIGHER or LOWER) based on concrete statistical evidence. Once you decide a direction, commit to it — the direction should be consistent and data-backed.
 
 ${linesText}
 
 Output ONLY this JSON array:
-[{"id":1,"name":"exact player name","meta":"League · Team","stat":"exact stat","val":"exact line number from above","dir":"HIGHER","conf":92,"sport":"NBA","league":"NBA","initials":"PN","time":"exact time","date":"exact date","bull":"reason","bear":"risk","cats":[{"n":"stat","p":92}]}]
+[{"id":1,"name":"exact player name","meta":"League · Team","stat":"exact stat","val":"exact line number","dir":"HIGHER","conf":92,"sport":"NBA","league":"NBA","initials":"PN","time":"exact time","date":"exact date","bull":"specific reason","bear":"real risk","record":"13 of last 15 games cleared this line","cats":[{"n":"stat","p":92}]}]
 
 Rules:
-- Copy the line number EXACTLY as it appears after the colon in the data above
+- Copy the line number EXACTLY — never change it
 - Only include picks you are 90%+ confident in
-- dir is HIGHER or LOWER — never a default
+- dir must be HIGHER or LOWER based on clear evidence — never guess
+- record: specific recent performance like "Hit in 12 of last 15 tracked games"
 - NEVER pick the same player more than once`
         }]
       })
@@ -265,7 +270,7 @@ app.post('/chat', async (req, res) => {
           model: 'claude-sonnet-4-20250514',
           max_tokens: 4000,
           tools: [{ type: 'web_search_20250305', name: 'web_search' }],
-          system: `You are the Trip Predicts AI analyst for PrizePicks. You have real live prop lines provided to you. Always use the exact line numbers from the data provided — never use numbers from your training data. Prioritize NBA, MLB, NHL, NFL, and esports picks. Only recommend WNBA or niche sports if explicitly asked. Look for clear statistical edges — recent form, matchup advantages, usage rates, pace of play. Only recommend picks from games in the next 36 hours. Never recommend the same player twice. Spread picks across multiple sports — never more than 2 from the same league. Tiers: Regular below 75%, High 75-89%, GOLD 90%+. Do not default to HIGHER. Keep responses sharp and direct. Never use em dashes. Bold key info with **text**.`,
+          system: `You are the Trip Predicts AI analyst for PrizePicks. You have real live prop lines provided to you. Always use the exact line numbers from the data — never change them. Prioritize NBA, MLB, NHL, NFL, and esports. Only recommend WNBA or niche sports if explicitly asked. Look for clear statistical edges — recent form, matchup advantages, usage rates, pace of play. Only recommend picks from games in the next 36 hours. Never recommend the same player twice. Spread picks across multiple sports — never more than 2 from the same league. When recommending direction, commit to it based on data — be consistent. Tiers: Regular below 75%, High 75-89%, GOLD 90%+. Never use em dashes. Bold key info with **text**.`,
           messages: current
         })
       })
