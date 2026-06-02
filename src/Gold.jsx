@@ -1,5 +1,7 @@
 import React, { useEffect, useState } from 'react'
 import PickCard from './PickCard'
+import { useSubscription } from './useSubscription'
+import { supabase } from './supabase'
 
 const SERVER = 'https://trippredicts-production-cfad.up.railway.app'
 
@@ -106,7 +108,81 @@ async function fetchAllLines(server) {
   }
 }
 
+// ===== PAYWALL WRAPPER =====
 export default function Gold() {
+  const { status } = useSubscription()
+  const [loadingCheckout, setLoadingCheckout] = useState(false)
+
+  async function handleSubscribe() {
+    setLoadingCheckout(true)
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) { setLoadingCheckout(false); return }
+
+    try {
+      const res = await fetch(`${SERVER}/stripe/create-checkout`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId: user.id, email: user.email })
+      })
+      const data = await res.json()
+      if (data.url) window.location.href = data.url
+      else { alert('Could not start checkout. Try again.'); setLoadingCheckout(false) }
+    } catch (e) {
+      alert('Could not start checkout. Try again.')
+      setLoadingCheckout(false)
+    }
+  }
+
+  if (status === 'loading') {
+    return (
+      <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+        <div style={{ fontFamily: 'var(--font-d)', fontSize: '18px', letterSpacing: '2px', color: 'var(--gold)' }}>CHECKING ACCESS...</div>
+      </div>
+    )
+  }
+
+  if (status === 'inactive') {
+    return (
+      <div style={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '40px', textAlign: 'center', overflowY: 'auto' }}>
+        <div style={{ fontSize: '52px', marginBottom: '16px' }}>🔒</div>
+        <div style={{ fontFamily: 'var(--font-d)', fontSize: '32px', letterSpacing: '2px', background: 'linear-gradient(90deg,#d4a017,#f5c842,#fff0a0)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent', marginBottom: '12px' }}>
+          ★ GOLD PICKS
+        </div>
+        <div style={{ fontSize: '14px', color: 'var(--text2)', maxWidth: '320px', lineHeight: 1.6, marginBottom: '16px' }}>
+          Unlock every gold pick across all sports. 90%+ confidence plays, the full board, updated live.
+        </div>
+        <div style={{ fontFamily: 'var(--font-d)', fontSize: '40px', letterSpacing: '1px', color: '#f5c842', marginBottom: '4px', lineHeight: 1 }}>
+          $25<span style={{ fontSize: '18px', color: 'var(--text2)' }}>/month</span>
+        </div>
+        <div style={{ fontSize: '11px', color: 'var(--text3)', marginBottom: '28px' }}>Cancel anytime</div>
+
+        <button
+          onClick={handleSubscribe}
+          disabled={loadingCheckout}
+          style={{
+            background: 'linear-gradient(90deg,#d4a017,#f5c842,#fff0a0)',
+            border: 'none', borderRadius: '12px',
+            color: '#1a0f00', fontFamily: 'var(--font-d)', fontSize: '20px',
+            letterSpacing: '2px', padding: '16px 48px', cursor: loadingCheckout ? 'not-allowed' : 'pointer',
+            opacity: loadingCheckout ? 0.6 : 1, textTransform: 'uppercase',
+            WebkitTapHighlightColor: 'transparent', boxShadow: '0 0 30px rgba(245,200,66,0.3)'
+          }}
+        >
+          {loadingCheckout ? 'Loading...' : 'Unlock Gold'}
+        </button>
+
+        <div style={{ fontSize: '11px', color: 'var(--text3)', marginTop: '20px', maxWidth: '280px', lineHeight: 1.5 }}>
+          Free Tonight picks still include occasional gold calls. This unlocks the full gold board.
+        </div>
+      </div>
+    )
+  }
+
+  return <GoldContent />
+}
+
+// ===== GOLD CONTENT (subscribers only) =====
+function GoldContent() {
   const [allLines, setAllLines] = useState([])
   const [availableLeagues, setAvailableLeagues] = useState([])
   const [selectedLeague, setSelectedLeague] = useState('ALL')
