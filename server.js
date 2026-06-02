@@ -152,16 +152,16 @@ ${linesText}
 
 ${spreadRule}
 
-For each pick, determine direction (HIGHER or LOWER) based on concrete statistical evidence from the player's recent form and matchup. Once you decide a direction, commit to it.
+For each pick, determine direction (HIGHER or LOWER) based on concrete statistical evidence. Once you decide a direction, commit to it.
 
 Output ONLY this JSON array:
 [{"id":1,"name":"exact player name","meta":"League · Team","stat":"exact stat","val":"exact line number","dir":"HIGHER","conf":88,"sport":"NBA","league":"NBA","initials":"PN","time":"exact time","date":"exact date","bull":"specific reason","bear":"real risk","record":"12 of last 15 games cleared this line","cats":[{"n":"stat","p":88}]}]
 
 Rules:
-- Copy the line number EXACTLY as it appears — never change it
-- dir must be HIGHER or LOWER based on clear statistical evidence — never guess
+- Copy the line number EXACTLY — never change it
+- dir must be HIGHER or LOWER based on clear statistical evidence
 - conf is 50-95
-- record: a short specific statement like "11 of last 14 games hit this line"
+- record: short specific statement like "11 of last 14 games hit this line"
 - NEVER pick the same player more than once
 - Give exactly ${pickCount} picks`
         }]
@@ -169,10 +169,7 @@ Rules:
     })
 
     const data = await response.json()
-    if (!data.content) {
-      console.error('Picks API error:', JSON.stringify(data).slice(0, 300))
-      throw new Error(data.error?.message || 'AI service temporarily unavailable — try again in a moment')
-    }
+    if (!data.content) throw new Error(data.error?.message || 'No content')
     const textBlock = data.content.find(b => b.type === 'text')
     if (!textBlock) throw new Error('No response')
 
@@ -210,7 +207,7 @@ app.post('/gold', async (req, res) => {
       body: JSON.stringify({
         model: 'claude-sonnet-4-20250514',
         max_tokens: 4000,
-        system: `You are a PrizePicks prop analyst. Output ONLY a valid JSON array. No text before or after. Start with [ end with ]. If no picks qualify at 90%+ confidence, return an empty array: []`,
+        system: `You are a PrizePicks prop analyst. Output ONLY a valid JSON array. No text before or after. Start with [ end with ].`,
         messages: [{
           role: 'user',
           content: `Current time: ${currentTime} ET
@@ -221,39 +218,29 @@ ${spreadRule}
 
 ${linesText}
 
-Output ONLY a JSON array. If no picks qualify return [].
-Format: [{"id":1,"name":"exact player name","meta":"League · Team","stat":"exact stat","val":"exact line number","dir":"HIGHER","conf":92,"sport":"NBA","league":"NBA","initials":"PN","time":"exact time","date":"exact date","bull":"reason","bear":"risk","record":"Hit in 12 of last 15 games","cats":[{"n":"stat","p":92}]}]
+Output ONLY this JSON array:
+[{"id":1,"name":"exact player name","meta":"League · Team","stat":"exact stat","val":"exact line number","dir":"HIGHER","conf":92,"sport":"NBA","league":"NBA","initials":"PN","time":"exact time","date":"exact date","bull":"reason","bear":"risk","record":"Hit in 12 of last 15 games","cats":[{"n":"stat","p":92}]}]
 
 Rules:
 - Copy line numbers EXACTLY — never change them
 - Only include picks 90%+ confident
-- dir is HIGHER or LOWER based on clear evidence — never guess
-- record: specific recent performance like "Hit in 12 of last 15 games"
-- NEVER pick the same player twice
-- Return [] if nothing qualifies`
+- dir is HIGHER or LOWER based on clear evidence
+- record: specific recent performance
+- NEVER pick the same player twice`
         }]
       })
     })
 
     const data = await response.json()
-
-    if (!data.content) {
-      console.error('Gold API error:', JSON.stringify(data).slice(0, 300))
-      throw new Error(data.error?.message || 'AI service temporarily unavailable — try again in a moment')
-    }
-
-    const textBlock = data.content.find(b => b.type === 'text')
-    if (!textBlock) throw new Error('No response from AI')
+    if (!data.content) throw new Error(data.error?.message || 'No content')
+    const textBlock = data.content?.find(b => b.type === 'text')
+    if (!textBlock) throw new Error('No response')
 
     const start = textBlock.text.indexOf('[')
     const end = textBlock.text.lastIndexOf(']')
-    if (start === -1 || end === -1) {
-      console.log('Gold returned no array, treating as empty')
-      return res.json({ picks: [] })
-    }
+    if (start === -1 || end === -1) throw new Error('No gold picks right now.')
 
-    const parsed = JSON.parse(textBlock.text.slice(start, end + 1))
-    const picks = validateLines(dedupe(normalizePicks(parsed)), rawLines).filter(p => p.conf >= 90)
+    const picks = validateLines(dedupe(normalizePicks(JSON.parse(textBlock.text.slice(start, end + 1)))), rawLines).filter(p => p.conf >= 90)
     console.log('Got', picks.length, 'gold picks')
     res.json({ picks })
   } catch (e) {
