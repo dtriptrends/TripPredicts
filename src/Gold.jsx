@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react'
+import React, { useEffect, useState, useRef } from 'react'
 import PickCard from './PickCard'
 
 const SERVER = 'https://trippredicts-production-cfad.up.railway.app'
@@ -45,6 +45,16 @@ const STEP_LABELS = [
   ['GOING LIVE', 'FULL SCAN', 'HUNTING EDGES', 'FINAL CUT'],
   ['POWERING UP', 'REAL-TIME LINES', 'DEEP ANALYSIS', 'LOCKING GOLD'],
   ['BOOTING SCAN', 'LOADING DATA', 'WEIGHING FORM', 'GOLD BOARD'],
+]
+
+const LINES_MSGS = [
+  'LOADING LIVE LINES',
+  'CONNECTING TO PRIZEPICKS',
+  'PULLING LIVE PROPS',
+  'FETCHING THE BOARD',
+  'SCANNING ALL SPORTS',
+  'GETTING REAL DATA',
+  'ALMOST READY',
 ]
 
 const FACTS = [
@@ -121,7 +131,6 @@ async function fetchAllLines(server) {
 }
 
 export default function Gold() {
-  const [allLines, setAllLines] = useState([])
   const [availableLeagues, setAvailableLeagues] = useState([])
   const [selectedLeague, setSelectedLeague] = useState('ALL')
   const [picksCache, setPicksCache] = useState({})
@@ -135,6 +144,11 @@ export default function Gold() {
   const [factIdx, setFactIdx] = useState(0)
   const [factVisible, setFactVisible] = useState(true)
   const [btnPulse, setBtnPulse] = useState(false)
+  const [linesMsgIdx, setLinesMsgIdx] = useState(0)
+  const [linesMsgVisible, setLinesMsgVisible] = useState(true)
+
+  // Use ref to always have fresh lines in callbacks
+  const linesRef = useRef([])
 
   const now = new Date()
   const currentTime = now.toLocaleTimeString('en-US', { timeZone: 'America/New_York', hour: 'numeric', minute: '2-digit', hour12: true })
@@ -143,6 +157,20 @@ export default function Gold() {
     initLines()
   }, [])
 
+  // Cycle loading messages during lines fetch
+  useEffect(() => {
+    if (!linesLoading) return
+    const interval = setInterval(() => {
+      setLinesMsgVisible(false)
+      setTimeout(() => {
+        setLinesMsgIdx(i => (i + 1) % LINES_MSGS.length)
+        setLinesMsgVisible(true)
+      }, 300)
+    }, 2000)
+    return () => clearInterval(interval)
+  }, [linesLoading])
+
+  // Cycle facts during AI analysis
   useEffect(() => {
     if (!loadingLeague) return
     const interval = setInterval(() => {
@@ -162,9 +190,12 @@ export default function Gold() {
     setError(null)
     setSelectedLeague('ALL')
     setBtnPulse(false)
+    setLinesMsgIdx(0)
+    setLinesMsgVisible(true)
+    linesRef.current = []
 
     const lines = await fetchAllLines(SERVER)
-    setAllLines(lines)
+    linesRef.current = lines
 
     const leagueSet = new Set(lines.map(l => (l.league || '').toUpperCase()).filter(Boolean))
     const ordered = LEAGUE_ORDER.filter(l => l === 'ALL' || leagueSet.has(l))
@@ -181,7 +212,14 @@ export default function Gold() {
   }
 
   async function loadGoldForLeague(league) {
-    if (!allLines || allLines.length === 0) return
+    const lns = linesRef.current
+    console.log('loadGoldForLeague called with', lns.length, 'lines for', league)
+    if (!lns || lns.length === 0) {
+      console.log('No lines available, reinitializing...')
+      await initLines()
+      return
+    }
+
     const labels = STEP_LABELS[Math.floor(Math.random() * STEP_LABELS.length)]
     setStepLabels(labels)
     setLoadingLeague(league)
@@ -196,7 +234,7 @@ export default function Gold() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           currentTime,
-          lines: allLines,
+          lines: lns,
           league: league === 'ALL' ? null : league
         })
       })
@@ -219,7 +257,7 @@ export default function Gold() {
       }
 
       const imageMap = {}
-      allLines.forEach(l => { if (l.image) imageMap[l.name] = l.image })
+      lns.forEach(l => { if (l.image) imageMap[l.name] = l.image })
       data.picks.forEach(p => { if (!p.image && imageMap[p.name]) p.image = imageMap[p.name] })
 
       setProgress(100)
@@ -271,16 +309,24 @@ export default function Gold() {
         </div>
       </div>
 
-      {/* Lines loading */}
+      {/* Lines loading with cycling words */}
       {linesLoading && (
-        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '16px' }}>
+        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '20px' }}>
           <div style={{ display: 'flex', gap: '8px' }}>
             {[0, 1, 2].map(i => (
               <div key={i} style={{ width: '8px', height: '8px', borderRadius: '50%', background: 'var(--gold)', animation: `dotPulse 1.3s ${i * 0.2}s infinite` }} />
             ))}
           </div>
-          <div style={{ fontFamily: 'var(--font-d)', fontSize: '16px', letterSpacing: '2px', color: 'var(--gold)' }}>LOADING LIVE LINES</div>
-          <div style={{ fontSize: '12px', color: 'var(--text2)' }}>Fetching props from PrizePicks...</div>
+          <div style={{
+            fontFamily: 'var(--font-d)', fontSize: '18px', letterSpacing: '3px', color: 'var(--gold)',
+            opacity: linesMsgVisible ? 1 : 0, transition: 'opacity 0.3s ease',
+            minHeight: '28px', textAlign: 'center'
+          }}>
+            {LINES_MSGS[linesMsgIdx]}
+          </div>
+          <div style={{ fontSize: '12px', color: 'var(--text2)', textAlign: 'center', maxWidth: '260px', lineHeight: 1.6 }}>
+            Pulling live props from PrizePicks...
+          </div>
         </div>
       )}
 
@@ -374,7 +420,6 @@ export default function Gold() {
             <div style={{ fontSize: '52px', marginBottom: '10px' }}>{cta.icon}</div>
             <div style={{ fontSize: '12px', color: 'var(--text2)', letterSpacing: '1px', textTransform: 'uppercase' }}>{cta.sub}</div>
           </div>
-
           <button
             onClick={() => loadGoldForLeague(selectedLeague)}
             style={{
@@ -443,7 +488,13 @@ export default function Gold() {
           {selectedLeague !== 'ALL' && (
             <button onClick={() => handleTabSelect('ALL')} style={{ background: 'none', border: '1px solid var(--border2)', color: 'var(--text2)', fontFamily: 'var(--font)', fontSize: '13px', padding: '8px 20px', borderRadius: '10px', cursor: 'pointer', marginBottom: '10px' }}>Check All Sports</button>
           )}
-          <button onClick={() => { setPicksCache(prev => { const n = { ...prev }; delete n[selectedLeague]; return n }); loadGoldForLeague(selectedLeague) }} style={{ background: 'none', border: '1px solid rgba(245,200,66,0.3)', color: '#f5c842', fontFamily: 'var(--font)', fontSize: '13px', padding: '8px 20px', borderRadius: '10px', cursor: 'pointer' }}>
+          <button
+            onClick={() => {
+              setPicksCache(prev => { const n = { ...prev }; delete n[selectedLeague]; return n })
+              setTimeout(() => loadGoldForLeague(selectedLeague), 50)
+            }}
+            style={{ background: 'none', border: '1px solid rgba(245,200,66,0.3)', color: '#f5c842', fontFamily: 'var(--font)', fontSize: '13px', padding: '8px 20px', borderRadius: '10px', cursor: 'pointer' }}
+          >
             Try Again
           </button>
         </div>
