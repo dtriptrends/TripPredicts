@@ -1,16 +1,68 @@
 console.log('SERVER STARTING - node is running')
 import express from 'express'
 import cors from 'cors'
+import Stripe from 'stripe'
+import { createClient } from '@supabase/supabase-js'
 
 const app = express()
 app.use(cors())
-app.use(express.json({ limit: '10mb' }))
 
 const API_KEY = process.env.VITE_ANTHROPIC_API_KEY
 const sleep = ms => new Promise(r => setTimeout(r, ms))
 
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY)
+const supabaseAdmin = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY)
+
 let ppCache = { data: null, ts: 0 }
 const CACHE_TTL = 5 * 60 * 1000
+
+// Stripe webhook MUST come before express.json() — needs the raw body
+app.post('/stripe/webhook', express.raw({ type: 'application/json' }), async (req, res) => {
+  const sig = req.headers['stripe-signature']
+  let event
+  try {
+    event = stripe.webhooks.constructEvent(req.body, sig, process.env.STRIPE_WEBHOOK_SECRET)
+  } catch (err) {
+    console.error('Webhook signature failed:', err.message)
+    return res.status(400).send(`Webhook Error: ${err.message}`)
+  }
+
+  try {
+    if (event.type === 'checkout.session.completed') {
+      const session = event.data.object
+      const userId = session.client_reference_id
+      const customerId = session.customer
+      const subscriptionId = session.subscription
+      const sub = await stripe.subscriptions.retrieve(subscriptionId)
+      await supabaseAdmin.from('subscriptions').upsert({
+        user_id: userId,
+        stripe_customer_id: customerId,
+        stripe_subscription_id: subscriptionId,
+        status: sub.status,
+        current_period_end: new Date(sub.current_period_end * 1000).toISOString(),
+        updated_at: new Date().toISOString()
+      }, { onConflict: 'user_id' })
+      console.log('Subscription activated for user', userId)
+    }
+
+    if (event.type === 'customer.subscription.updated' || event.type === 'customer.subscription.deleted') {
+      const sub = event.data.object
+      await supabaseAdmin.from('subscriptions').update({
+        status: sub.status,
+        current_period_end: new Date(sub.current_period_end * 1000).toISOString(),
+        updated_at: new Date().toISOString()
+      }).eq('stripe_subscription_id', sub.id)
+      console.log('Subscription', sub.id, 'updated to', sub.status)
+    }
+  } catch (e) {
+    console.error('Webhook handler error:', e.message)
+  }
+
+  res.json({ received: true })
+})
+
+// JSON middleware comes AFTER the webhook
+app.use(express.json({ limit: '10mb' }))
 
 function sortLines(rawLines, league) {
   if (!rawLines) return []
@@ -119,6 +171,28 @@ app.get('/prizepicks/:leagueId', async (req, res) => {
   }
 })
 
+app.post('/stripe/create-checkout', async (req, res) => {
+  try {
+    const { userId, email } = req.body
+    if (!userId || !email) throw new Error('Missing user info')
+
+    const session = await stripe.checkout.sessions.create({
+      mode: 'subscription',
+      payment_method_types: ['card'],
+      line_items: [{ price: process.env.STRIPE_PRICE_ID, quantity: 1 }],
+      client_reference_id: userId,
+      customer_email: email,
+      success_url: 'https://trip-predicts.vercel.app?sub=success',
+      cancel_url: 'https://trip-predicts.vercel.app?sub=cancel'
+    })
+
+    res.json({ url: session.url })
+  } catch (e) {
+    console.error('Checkout error:', e.message)
+    res.status(500).json({ error: e.message })
+  }
+})
+
 app.post('/picks', async (req, res) => {
   try {
     const { currentTime, lines: rawLines, league, count = 6 } = req.body
@@ -212,24 +286,24 @@ app.post('/gold', async (req, res) => {
           role: 'user',
           content: `Current time: ${currentTime} ET
 
-These are REAL live PrizePicks lines. Find the strongest picks available. Copy line numbers exactly — never change them:
+These are REAL live PrizePicks lines. Find the highest confidence picks at 90%+ confidence only. Copy line numbers exactly — never change them:
 
 ${spreadRule}
 
 ${linesText}
 
-Find your top 4-6 highest confidence picks at 90%+ confidence. You MUST always return at least 3 picks — never return an empty array. Only assign 90%+ confidence when genuinely warranted by recent stats. Use your knowledge of each player's recent performance to write a specific record stat.
+Find your top 4-6 picks where you are genuinely 90%+ confident based on recent player performance and matchup. You MUST return at least 3 picks — never return an empty array. Only assign 90%+ confidence when genuinely warranted by recent stats and form.
 
 Output ONLY this JSON array:
 [{"id":1,"name":"exact player name","meta":"League · Team","stat":"exact stat","val":"exact line number","dir":"HIGHER","conf":92,"sport":"NBA","league":"NBA","initials":"PN","time":"exact time","date":"exact date","bull":"specific reason why this hits","bear":"real risk factor","record":"Hit this line in 12 of his last 15 games","cats":[{"n":"stat name","p":92}]}]
 
 Rules:
 - Copy line numbers EXACTLY — never change them
-- dir is HIGHER or LOWER — based on real statistical evidence, never guess
-- conf is 50-95
-- record: MUST be specific like "Hit in 11 of last 14 games" or "Averaging well above this line over last 10 games" — never generic
+- conf must be 90 or above — never assign below 90 on this endpoint
+- dir is HIGHER or LOWER based on real statistical evidence — never guess
+- record: MUST be specific like "Hit in 11 of last 14 games" or "Averaged well above this line over last 10 games"
 - NEVER pick the same player twice
-- Always return at least 2 picks`
+- Always return at least 3 picks`
         }]
       })
     })
