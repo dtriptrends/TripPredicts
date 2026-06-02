@@ -12,6 +12,33 @@ const sleep = ms => new Promise(r => setTimeout(r, ms))
 let ppCache = { data: null, ts: 0 }
 const CACHE_TTL = 5 * 60 * 1000
 
+async function warmCache() {
+  try {
+    console.log('Warming PrizePicks cache on boot...')
+    const target = encodeURIComponent(`https://api.prizepicks.com/projections?per_page=250&single_stat=true`)
+    let data = null
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        if (attempt > 0) await new Promise(r => setTimeout(r, 2000 * attempt))
+        const response = await fetch(`https://api.scraperapi.com?api_key=${process.env.SCRAPER_API_KEY}&url=${target}&render=false&retry_404=true`)
+        const text = await response.text()
+        data = JSON.parse(text)
+        break
+      } catch (e) {
+        console.log(`Warm attempt ${attempt + 1} failed:`, e.message)
+      }
+    }
+    if (data) {
+      ppCache = { data, ts: Date.now() }
+      console.log('Cache warmed successfully')
+    }
+  } catch (e) {
+    console.log('Cache warm failed:', e.message)
+  }
+}
+
+warmCache()
+
 function sortLines(rawLines, league) {
   if (!rawLines) return []
   const PRIORITY = { 'NBA': 1, 'MLB': 2, 'NHL': 3, 'NFL': 4, 'CS2': 5, 'LOL': 5, 'VALORANT': 5, 'COD': 5 }
@@ -218,7 +245,7 @@ app.post('/gold', async (req, res) => {
       body: JSON.stringify({
         model: 'claude-sonnet-4-20250514',
         max_tokens: 4000,
-        system: `You are a PrizePicks prop analyst. Output ONLY a valid JSON array. No text before or after. Start with [ end with ].`,
+        system: `You are a PrizePicks prop analyst. Output ONLY a valid JSON array. No text before or after. Start with [ end with ]. If no picks qualify at 90%+ confidence, return [].`,
         messages: [{
           role: 'user',
           content: `Current time: ${currentTime} ET
@@ -229,15 +256,16 @@ ${spreadRule}
 
 ${linesText}
 
-Output ONLY this JSON array:
-[{"id":1,"name":"exact player name","meta":"League · Team","stat":"exact stat","val":"exact line number","dir":"HIGHER","conf":92,"sport":"NBA","league":"NBA","initials":"PN","time":"exact time","date":"exact date","bull":"reason","bear":"risk","record":"Hit in 12 of last 15 games","cats":[{"n":"stat","p":92}]}]
+Output ONLY a JSON array. If no picks qualify return [].
+Format: [{"id":1,"name":"exact player name","meta":"League · Team","stat":"exact stat","val":"exact line number","dir":"HIGHER","conf":92,"sport":"NBA","league":"NBA","initials":"PN","time":"exact time","date":"exact date","bull":"reason","bear":"risk","record":"Hit in 12 of last 15 games","cats":[{"n":"stat","p":92}]}]
 
 Rules:
 - Copy line numbers EXACTLY — never change them
 - Only include picks 90%+ confident
 - dir is HIGHER or LOWER based on clear evidence
 - record: specific recent performance
-- NEVER pick the same player twice`
+- NEVER pick the same player twice
+- Return [] if nothing qualifies`
         }]
       })
     })
@@ -245,13 +273,14 @@ Rules:
     const data = await response.json()
     if (!data.content) throw new Error(data.error?.message || 'No content')
     const textBlock = data.content?.find(b => b.type === 'text')
-    if (!textBlock) throw new Error('No response')
+    if (!textBlock) throw new Error('No response from AI')
 
     const start = textBlock.text.indexOf('[')
     const end = textBlock.text.lastIndexOf(']')
-    if (start === -1 || end === -1) throw new Error('No gold picks right now.')
+    if (start === -1 || end === -1) return res.json({ picks: [] })
 
-    const picks = validateLines(dedupe(normalizePicks(JSON.parse(textBlock.text.slice(start, end + 1)))), rawLines).filter(p => p.conf >= 90)
+    const parsed = JSON.parse(textBlock.text.slice(start, end + 1))
+    const picks = validateLines(dedupe(normalizePicks(parsed)), rawLines).filter(p => p.conf >= 90)
     console.log('Got', picks.length, 'gold picks')
     res.json({ picks })
   } catch (e) {
