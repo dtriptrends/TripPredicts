@@ -118,8 +118,7 @@ export default function Gold() {
   const [factIdx, setFactIdx] = useState(0)
   const [factVisible, setFactVisible] = useState(true)
 
-  const now = new Date()
-  const currentTime = now.toLocaleTimeString('en-US', { timeZone: 'America/New_York', hour: 'numeric', minute: '2-digit', hour12: true })
+  const currentTime = new Date().toLocaleTimeString('en-US', { timeZone: 'America/New_York', hour: 'numeric', minute: '2-digit', hour12: true })
 
   useEffect(() => {
     initLines()
@@ -146,6 +145,7 @@ export default function Gold() {
     setAllLines([])
 
     const lines = await fetchAllLines(SERVER)
+    console.log('GOLD: fetched', lines.length, 'lines')
     setAllLines(lines)
 
     const leagueSet = new Set(lines.map(l => (l.league || '').toUpperCase()).filter(Boolean))
@@ -159,15 +159,17 @@ export default function Gold() {
       return
     }
 
-    // Pass lines directly — no stale state issue
-    await loadGoldForLeague('ALL', lines)
+    // Pass lines directly to avoid stale state
+    await runGold('ALL', lines)
   }
 
-  async function loadGoldForLeague(league, lines) {
-    // Always use passed lines if available, fall back to state
-    const lns = lines || allLines
-    console.log('loadGoldForLeague', league, 'with', lns?.length, 'lines')
-    if (!lns || lns.length === 0) return
+  async function runGold(league, lines) {
+    console.log('GOLD: runGold called — league:', league, 'lines:', lines?.length)
+    if (!lines || lines.length === 0) {
+      console.log('GOLD: no lines, skipping')
+      setPicksCache(prev => ({ ...prev, [league]: [] }))
+      return
+    }
 
     const labels = STEP_LABELS[Math.floor(Math.random() * STEP_LABELS.length)]
     setStepLabels(labels)
@@ -182,7 +184,7 @@ export default function Gold() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           currentTime,
-          lines: lns,
+          lines,
           league: league === 'ALL' ? null : league
         })
       })
@@ -191,6 +193,7 @@ export default function Gold() {
       setStepIdx(3)
 
       const data = await res.json()
+      console.log('GOLD: response picks count:', data.picks?.length)
 
       if (!res.ok || !data.picks) {
         setPicksCache(prev => ({ ...prev, [league]: [] }))
@@ -199,14 +202,14 @@ export default function Gold() {
       }
 
       const imageMap = {}
-      lns.forEach(l => { if (l.image) imageMap[l.name] = l.image })
+      lines.forEach(l => { if (l.image) imageMap[l.name] = l.image })
       data.picks.forEach(p => { if (!p.image && imageMap[p.name]) p.image = imageMap[p.name] })
 
       setProgress(100)
       await new Promise(r => setTimeout(r, 300))
       setPicksCache(prev => ({ ...prev, [league]: data.picks }))
     } catch (e) {
-      console.error('Gold fetch error:', e.message)
+      console.error('GOLD fetch error:', e.message)
       setPicksCache(prev => ({ ...prev, [league]: [] }))
     }
     setLoadingLeague(null)
@@ -216,7 +219,7 @@ export default function Gold() {
     if (loadingLeague) return
     setSelectedLeague(league)
     if (picksCache[league] === undefined) {
-      await loadGoldForLeague(league, allLines)
+      await runGold(league, allLines)
     }
   }
 
@@ -359,7 +362,13 @@ export default function Gold() {
           {selectedLeague !== 'ALL' && (
             <button onClick={() => handleTabSelect('ALL')} style={{ background: 'none', border: '1px solid var(--border2)', color: 'var(--text2)', fontFamily: 'var(--font)', fontSize: '13px', padding: '8px 20px', borderRadius: '10px', cursor: 'pointer', marginBottom: '10px' }}>Check All Sports</button>
           )}
-          <button onClick={() => { setPicksCache(prev => { const n = { ...prev }; delete n[selectedLeague]; return n }); loadGoldForLeague(selectedLeague, allLines) }} style={{ background: 'none', border: '1px solid rgba(245,200,66,0.3)', color: '#f5c842', fontFamily: 'var(--font)', fontSize: '13px', padding: '8px 20px', borderRadius: '10px', cursor: 'pointer' }}>
+          <button
+            onClick={() => {
+              setPicksCache(prev => { const n = { ...prev }; delete n[selectedLeague]; return n })
+              runGold(selectedLeague, allLines)
+            }}
+            style={{ background: 'none', border: '1px solid rgba(245,200,66,0.3)', color: '#f5c842', fontFamily: 'var(--font)', fontSize: '13px', padding: '8px 20px', borderRadius: '10px', cursor: 'pointer' }}
+          >
             Try Again
           </button>
         </div>
