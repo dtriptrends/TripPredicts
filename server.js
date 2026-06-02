@@ -98,14 +98,7 @@ app.get('/prizepicks/all', async (req, res) => {
     }
     const target = encodeURIComponent(`https://api.prizepicks.com/projections?per_page=250&single_stat=true`)
     const response = await fetch(`https://api.scraperapi.com?api_key=${process.env.SCRAPER_API_KEY}&url=${target}`)
-    const text = await response.text()
-    let data
-    try {
-      data = JSON.parse(text)
-    } catch (e) {
-      if (ppCache.data) return res.json(ppCache.data)
-      return res.status(500).json({ error: 'PrizePicks unavailable right now. Try again in a moment.' })
-    }
+    const data = await response.json()
     ppCache = { data, ts: now }
     res.json(data)
   } catch (e) {
