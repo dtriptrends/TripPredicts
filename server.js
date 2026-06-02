@@ -12,28 +12,39 @@ const sleep = ms => new Promise(r => setTimeout(r, ms))
 let ppCache = { data: null, ts: 0 }
 const CACHE_TTL = 5 * 60 * 1000
 
+async function scrape(url) {
+  const target = encodeURIComponent(url)
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), 25000)
+  try {
+    const response = await fetch(
+      `https://api.scraperapi.com?api_key=${process.env.SCRAPER_API_KEY}&url=${target}&render=false&retry_404=true`,
+      { signal: controller.signal }
+    )
+    const text = await response.text()
+    return JSON.parse(text)
+  } finally {
+    clearTimeout(timeout)
+  }
+}
+
 async function warmCache() {
   try {
     console.log('Warming PrizePicks cache on boot...')
-    const target = encodeURIComponent(`https://api.prizepicks.com/projections?per_page=250&single_stat=true`)
-    let data = null
     for (let attempt = 0; attempt < 3; attempt++) {
       try {
-        if (attempt > 0) await new Promise(r => setTimeout(r, 2000 * attempt))
-        const response = await fetch(`https://api.scraperapi.com?api_key=${process.env.SCRAPER_API_KEY}&url=${target}&render=false&retry_404=true`)
-        const text = await response.text()
-        data = JSON.parse(text)
-        break
+        if (attempt > 0) await new Promise(r => setTimeout(r, 3000 * attempt))
+        const data = await scrape(`https://api.prizepicks.com/projections?per_page=250&single_stat=true`)
+        ppCache = { data, ts: Date.now() }
+        console.log('Cache warmed successfully')
+        return
       } catch (e) {
         console.log(`Warm attempt ${attempt + 1} failed:`, e.message)
       }
     }
-    if (data) {
-      ppCache = { data, ts: Date.now() }
-      console.log('Cache warmed successfully')
-    }
+    console.log('Cache warm failed after 3 attempts — will retry on first request')
   } catch (e) {
-    console.log('Cache warm failed:', e.message)
+    console.log('Cache warm error:', e.message)
   }
 }
 
@@ -123,24 +134,14 @@ app.get('/prizepicks/all', async (req, res) => {
       console.log('Serving PrizePicks from cache')
       return res.json(ppCache.data)
     }
-    const target = encodeURIComponent(`https://api.prizepicks.com/projections?per_page=250&single_stat=true`)
-    let data = null
-    for (let attempt = 0; attempt < 3; attempt++) {
-      try {
-        if (attempt > 0) await new Promise(r => setTimeout(r, 2000 * attempt))
-        const response = await fetch(`https://api.scraperapi.com?api_key=${process.env.SCRAPER_API_KEY}&url=${target}&render=false&retry_404=true`)
-        const text = await response.text()
-        data = JSON.parse(text)
-        break
-      } catch (e) {
-        console.log(`Attempt ${attempt + 1} failed:`, e.message)
-        if (attempt === 2) throw e
-      }
-    }
+    const data = await scrape(`https://api.prizepicks.com/projections?per_page=250&single_stat=true`)
     ppCache = { data, ts: now }
     res.json(data)
   } catch (e) {
-    if (ppCache.data) return res.json(ppCache.data)
+    if (ppCache.data) {
+      console.log('ScraperAPI failed, serving stale cache')
+      return res.json(ppCache.data)
+    }
     res.status(500).json({ error: e.message })
   }
 })
@@ -148,9 +149,7 @@ app.get('/prizepicks/all', async (req, res) => {
 app.get('/prizepicks/:leagueId', async (req, res) => {
   try {
     const { leagueId } = req.params
-    const target = encodeURIComponent(`https://api.prizepicks.com/projections?league_id=${leagueId}&per_page=50&single_stat=true`)
-    const response = await fetch(`https://api.scraperapi.com?api_key=${process.env.SCRAPER_API_KEY}&url=${target}`)
-    const data = await response.json()
+    const data = await scrape(`https://api.prizepicks.com/projections?league_id=${leagueId}&per_page=50&single_stat=true`)
     res.json(data)
   } catch (e) {
     res.status(500).json({ error: e.message })
