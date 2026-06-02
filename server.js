@@ -97,8 +97,19 @@ app.get('/prizepicks/all', async (req, res) => {
       return res.json(ppCache.data)
     }
     const target = encodeURIComponent(`https://api.prizepicks.com/projections?per_page=250&single_stat=true`)
-    const response = await fetch(`https://api.scraperapi.com?api_key=${process.env.SCRAPER_API_KEY}&url=${target}`)
-    const data = await response.json()
+    let data = null
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        if (attempt > 0) await new Promise(r => setTimeout(r, 2000 * attempt))
+        const response = await fetch(`https://api.scraperapi.com?api_key=${process.env.SCRAPER_API_KEY}&url=${target}&render=false&retry_404=true`)
+        const text = await response.text()
+        data = JSON.parse(text)
+        break
+      } catch (e) {
+        console.log(`Attempt ${attempt + 1} failed:`, e.message)
+        if (attempt === 2) throw e
+      }
+    }
     ppCache = { data, ts: now }
     res.json(data)
   } catch (e) {
