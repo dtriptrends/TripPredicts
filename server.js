@@ -14,19 +14,13 @@ const CACHE_TTL = 5 * 60 * 1000
 
 async function scrape(url) {
   const target = encodeURIComponent(url)
-  const controller = new AbortController()
-  const timeout = setTimeout(() => controller.abort(), 25000)
-  try {
-    const response = await fetch(
-      `https://api.scraperapi.com?api_key=${process.env.SCRAPER_API_KEY}&url=${target}&render=false&retry_404=true`,
-      { signal: controller.signal }
-    )
-    const text = await response.text()
-    return JSON.parse(text)
-  } finally {
-    clearTimeout(timeout)
-  }
+  const response = await fetch(
+    `https://api.scraperapi.com?api_key=${process.env.SCRAPER_API_KEY}&url=${target}&render=false&retry_404=true`
+  )
+  const text = await response.text()
+  return JSON.parse(text)
 }
+
 
 async function warmCache() {
   try {
