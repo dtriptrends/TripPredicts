@@ -111,7 +111,7 @@ app.get('/prizepicks/:leagueId', async (req, res) => {
   try {
     const { leagueId } = req.params
     const target = encodeURIComponent(`https://api.prizepicks.com/projections?league_id=${leagueId}&per_page=50&single_stat=true`)
-    const response = await fetch(`https://api.scraperapi.com?api_key=${process.env.SCRAPER_API_KEY}&url=${target}`)
+    const response = await fetch(`https://api.scraperapi.com?api_key=${process.env.SCRAPER_API_KEY}&url=${target}&ultra_premium=true`)
     const data = await response.json()
     res.json(data)
   } catch (e) {
