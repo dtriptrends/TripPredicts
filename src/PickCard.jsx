@@ -1,5 +1,7 @@
 import React, { useState, useEffect } from 'react'
 
+const SERVER = 'https://trippredicts-production-cfad.up.railway.app'
+
 function tierOf(c) { return c >= 90 ? 'gold' : c >= 75 ? 'high' : 'regular' }
 
 const LEAGUE_COLORS = {
@@ -45,10 +47,17 @@ const FLAME_GRADIENTS = [
   'radial-gradient(ellipse at bottom, rgba(255,140,0,0.85),rgba(255,210,50,0.35) 45%, transparent 80%)',
 ]
 
+// session cache so re-clicking a player is instant
+const statsCache = {}
+
 export default function PickCard({ pick, delay = 0 }) {
   const [revealed, setRevealed] = useState(false)
   const [barWidth, setBarWidth] = useState(0)
   const [infoOpen, setInfoOpen] = useState(false)
+  const [statsOpen, setStatsOpen] = useState(false)
+  const [statsLoading, setStatsLoading] = useState(false)
+  const [statsData, setStatsData] = useState(null)
+  const [statsError, setStatsError] = useState(null)
   const t = tierOf(pick.conf)
   const up = pick.dir === 'HIGHER'
   const league = (pick.league || pick.sport || '').toUpperCase()
@@ -64,6 +73,34 @@ export default function PickCard({ pick, delay = 0 }) {
   const borderColor = isGold ? '#b84000' : t === 'high' ? 'rgba(16,185,129,0.3)' : 'rgba(255,255,255,0.06)'
   const confColor = isGold ? '#f5c842' : t === 'high' ? '#10b981' : '#7a8aaa'
   const fillBg = isGold ? 'linear-gradient(90deg,#d4a017,#f5c842,#fff0a0)' : t === 'high' ? '#10b981' : '#3a4a6a'
+
+  const cacheKey = `${pick.name}|${pick.stat}|${league}`
+
+  async function openStats() {
+    setStatsOpen(true)
+    if (statsCache[cacheKey]) { setStatsData(statsCache[cacheKey]); return }
+    setStatsLoading(true)
+    setStatsError(null)
+    try {
+      const res = await fetch(`${SERVER}/player-stats`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ player: pick.name, stat: pick.stat, league })
+      })
+      const data = await res.json()
+      if (data.error) throw new Error(data.error)
+      statsCache[cacheKey] = data
+      setStatsData(data)
+    } catch (e) {
+      setStatsError('Could not load recent games right now. Try again in a moment.')
+    }
+    setStatsLoading(false)
+  }
+
+  const lineNum = Number(pick.val)
+  const games = statsData?.games || []
+  const maxVal = games.length ? Math.max(...games.map(g => Number(g.value) || 0), lineNum) : lineNum
+  const clearedCount = games.filter(g => up ? Number(g.value) > lineNum : Number(g.value) < lineNum).length
 
   return (
     <div style={{
@@ -187,24 +224,25 @@ export default function PickCard({ pick, delay = 0 }) {
 
         {/* Content */}
         <div style={{ padding: '12px 13px 10px' }}>
-          <div style={{ fontFamily: "'Barlow Condensed',sans-serif", fontSize: '15px', fontWeight: 700, color: '#eef2ff', letterSpacing: '0.5px', lineHeight: 1.1 }}>{pick.name}</div>
+          {/* Clickable player name → recent games */}
+          <div
+            onClick={openStats}
+            style={{ fontFamily: "'Barlow Condensed',sans-serif", fontSize: '15px', fontWeight: 700, color: '#eef2ff', letterSpacing: '0.5px', lineHeight: 1.1, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: '5px', WebkitTapHighlightColor: 'transparent' }}
+          >
+            {pick.name}
+            <span style={{ fontSize: '10px', color: isGold ? '#ff9944' : '#4a90d9' }}>📊</span>
+          </div>
           <div style={{ fontSize: '11px', color: '#7a8aaa', marginTop: '2px' }}>{pick.meta}</div>
 
-          {/* Record badge */}
-          {pick.record && (
-            <div style={{
-              display: 'inline-flex', alignItems: 'center', gap: '5px',
-              marginTop: '5px', marginBottom: '4px',
-              background: 'rgba(16,185,129,0.08)', border: '1px solid rgba(16,185,129,0.2)',
-              borderRadius: '8px', padding: '3px 8px'
-            }}>
-              <span style={{ fontSize: '10px' }}>📊</span>
-              <span style={{ fontSize: '10px', color: '#10b981', fontFamily: "'Barlow Condensed',sans-serif", fontWeight: 600, letterSpacing: '0.3px' }}>{pick.record}</span>
-            </div>
-          )}
+          <div
+            onClick={openStats}
+            style={{ fontSize: '10px', color: isGold ? '#ff9944' : '#4a90d9', marginTop: '4px', cursor: 'pointer', fontFamily: "'Barlow Condensed',sans-serif", fontWeight: 600, letterSpacing: '0.3px' }}
+          >
+            ▸ View recent games
+          </div>
 
           {(pick.time || pick.date) && (
-            <div style={{ fontSize: '10px', color: isGold ? '#ff9944' : '#f5c842', marginTop: '4px', marginBottom: '8px', fontFamily: "'Barlow Condensed',sans-serif", fontWeight: 600, letterSpacing: '0.5px' }}>
+            <div style={{ fontSize: '10px', color: isGold ? '#ff9944' : '#f5c842', marginTop: '6px', marginBottom: '8px', fontFamily: "'Barlow Condensed',sans-serif", fontWeight: 600, letterSpacing: '0.5px' }}>
               🕐 {pick.date ? `${pick.date} · ` : ''}{pick.time || ''}
             </div>
           )}
@@ -235,7 +273,6 @@ export default function PickCard({ pick, delay = 0 }) {
             </div>
           </div>
 
-          {/* Toggle button — WebkitTapHighlightColor prevents mobile ghost tap */}
           <button
             onClick={() => setInfoOpen(prev => !prev)}
             style={{
@@ -254,7 +291,7 @@ export default function PickCard({ pick, delay = 0 }) {
           >{infoOpen ? 'Hide Info ▴' : 'View Info ▾'}</button>
         </div>
 
-        {/* Info section — maxHeight transition instead of conditional render = no mobile freeze */}
+        {/* Info section */}
         <div style={{
           maxHeight: infoOpen ? '400px' : '0px',
           overflow: 'hidden',
@@ -285,16 +322,96 @@ export default function PickCard({ pick, delay = 0 }) {
         </div>
       </div>
 
+      {/* Recent games modal */}
+      {statsOpen && (
+        <div
+          onClick={() => setStatsOpen(false)}
+          style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.75)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '20px', backdropFilter: 'blur(3px)' }}
+        >
+          <div
+            onClick={e => e.stopPropagation()}
+            style={{ background: 'linear-gradient(180deg,#0d1219,#0a0f1a)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '18px', width: '100%', maxWidth: '420px', maxHeight: '80vh', overflowY: 'auto', padding: '20px' }}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '4px' }}>
+              <div style={{ fontFamily: "'Bebas Neue',sans-serif", fontSize: '22px', letterSpacing: '1px', color: '#eef2ff' }}>{pick.name}</div>
+              <div onClick={() => setStatsOpen(false)} style={{ fontSize: '20px', color: '#7a8aaa', cursor: 'pointer', lineHeight: 1 }}>×</div>
+            </div>
+            <div style={{ fontSize: '12px', color: '#7a8aaa', marginBottom: '16px' }}>Recent games · {pick.stat} · line {pick.val} {up ? '(higher)' : '(lower)'}</div>
+
+            {statsLoading && (
+              <div style={{ padding: '40px 0', textAlign: 'center' }}>
+                <div style={{ display: 'flex', gap: '6px', justifyContent: 'center', marginBottom: '14px' }}>
+                  {[0,1,2].map(i => <div key={i} style={{ width: '8px', height: '8px', borderRadius: '50%', background: '#4a90d9', animation: `dotP 1.3s ${i*0.2}s infinite` }} />)}
+                </div>
+                <div style={{ fontSize: '13px', color: '#7a8aaa' }}>Pulling recent games from the web...</div>
+                <div style={{ fontSize: '11px', color: '#3a4a6a', marginTop: '6px' }}>This can take a few seconds</div>
+              </div>
+            )}
+
+            {statsError && <div style={{ padding: '30px 0', textAlign: 'center', fontSize: '13px', color: '#7a8aaa' }}>{statsError}</div>}
+
+            {!statsLoading && !statsError && statsData && games.length > 0 && (
+              <>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '14px', padding: '8px 12px', background: 'rgba(16,185,129,0.08)', border: '1px solid rgba(16,185,129,0.2)', borderRadius: '10px' }}>
+                  <span style={{ fontFamily: "'Bebas Neue',sans-serif", fontSize: '20px', color: '#10b981' }}>{clearedCount}/{games.length}</span>
+                  <span style={{ fontSize: '12px', color: '#7a8aaa' }}>recent games {up ? 'cleared' : 'stayed under'} {pick.val}</span>
+                </div>
+
+                {/* Mini bar chart */}
+                <div style={{ display: 'flex', alignItems: 'flex-end', gap: '4px', height: '90px', marginBottom: '16px', position: 'relative', borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
+                  {/* line marker */}
+                  <div style={{ position: 'absolute', left: 0, right: 0, bottom: `${(lineNum / maxVal) * 100}%`, height: '1px', background: 'rgba(245,200,66,0.6)', zIndex: 2 }}>
+                    <span style={{ position: 'absolute', right: 0, top: '-14px', fontSize: '9px', color: '#f5c842' }}>line {pick.val}</span>
+                  </div>
+                  {games.slice(0, 12).map((g, i) => {
+                    const v = Number(g.value) || 0
+                    const cleared = up ? v > lineNum : v < lineNum
+                    return (
+                      <div key={i} style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'flex-end', height: '100%' }}>
+                        <div style={{ fontSize: '8px', color: '#7a8aaa', marginBottom: '2px' }}>{v}</div>
+                        <div style={{ width: '100%', height: `${(v / maxVal) * 100}%`, background: cleared ? '#10b981' : '#ef4444', borderRadius: '2px 2px 0 0', minHeight: '2px' }} />
+                      </div>
+                    )
+                  })}
+                </div>
+
+                {/* Game list */}
+                <div>
+                  {games.map((g, i) => {
+                    const v = Number(g.value) || 0
+                    const cleared = up ? v > lineNum : v < lineNum
+                    return (
+                      <div key={i} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '7px 0', borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
+                        <span style={{ fontSize: '12px', color: '#aab4cc' }}>{g.opponent || g.date || `Game ${i+1}`}</span>
+                        <span style={{ fontFamily: "'Barlow Condensed',sans-serif", fontSize: '14px', fontWeight: 700, color: cleared ? '#10b981' : '#ef4444' }}>{v}</span>
+                      </div>
+                    )
+                  })}
+                </div>
+
+                <div style={{ fontSize: '10px', color: '#3a4a6a', marginTop: '14px', lineHeight: 1.5, textAlign: 'center' }}>
+                  {statsData.note || 'Pulled from live web search. May not include every game.'}
+                </div>
+              </>
+            )}
+
+            {!statsLoading && !statsError && statsData && games.length === 0 && (
+              <div style={{ padding: '30px 0', textAlign: 'center', fontSize: '13px', color: '#7a8aaa' }}>
+                {statsData.note || 'No recent games found for this player.'}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
       <style>{`
         @keyframes outerFireGlow {
           0%,100% { box-shadow: 0 0 18px 4px rgba(255,50,0,0.25), 0 0 40px 8px rgba(255,90,0,0.12); }
           33%      { box-shadow: 0 0 24px 6px rgba(255,90,0,0.35), 0 0 55px 12px rgba(255,140,0,0.18); }
           66%      { box-shadow: 0 0 20px 5px rgba(255,140,0,0.3), 0 0 48px 10px rgba(245,190,50,0.15); }
         }
-        @keyframes shimmerMove {
-          0% { transform: translateX(-100%); }
-          100% { transform: translateX(300%); }
-        }
+        @keyframes shimmerMove { 0% { transform: translateX(-100%); } 100% { transform: translateX(300%); } }
+        @keyframes dotP { 0%,80%,100% { opacity:0.2; transform:scale(1); } 40% { opacity:1; transform:scale(1.2); } }
         @keyframes flicker0 {
           from { transform: scaleX(1)    translateY(2px)   rotate(-4deg); opacity: 0.92; }
           to   { transform: scaleX(0.5)  translateY(-18px) rotate(5deg);  opacity: 0.05; }
