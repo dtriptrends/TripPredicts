@@ -74,6 +74,70 @@ function sortLines(rawLines, league) {
   return result.slice(0, 100)
 }
 
+app.post('/player-stats', async (req, res) => {
+  try {
+    const { player, stat, league } = req.body
+    if (!player) throw new Error('No player provided')
+
+    const statText = stat ? ` for the stat "${stat}"` : ''
+    const leagueText = league ? ` (${league})` : ''
+
+    let current = [{
+      role: 'user',
+      content: `Search the web for ${player}${leagueText} recent game-by-game stats${statText}. I need their actual last 10 games with the specific stat value for each game. Use real sources like ESPN, StatMuse, or official league stats.
+
+Return ONLY a valid JSON object, no text before or after, in this exact format:
+{"player":"${player}","stat":"the stat name","games":[{"date":"game date or opponent","value":number,"opponent":"opponent if known"}],"note":"any honesty note about data completeness"}
+
+If you can only find some games, return what you found and say so in the note. If you cannot find reliable data, return {"player":"${player}","stat":"","games":[],"note":"Could not find reliable recent stats for this player."}`
+    }]
+
+    for (let i = 0; i < 8; i++) {
+      if (i > 0) await sleep(2000)
+      const r = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-api-key': API_KEY, 'anthropic-version': '2023-06-01' },
+        body: JSON.stringify({
+          model: 'claude-sonnet-4-20250514',
+          max_tokens: 3000,
+          tools: [{ type: 'web_search_20250305', name: 'web_search' }],
+          system: `You are a sports stats lookup tool. You search the web for real, recent player game stats and return them as JSON only. Never invent numbers — only report what you actually find in search results. If you cannot verify a stat, leave it out. Output ONLY the JSON object, no other text.`,
+          messages: current
+        })
+      })
+      const data = await r.json()
+      if (!data.content) throw new Error(data.error?.message || 'No content')
+
+      if (data.stop_reason === 'tool_use') {
+        current = [...current, { role: 'assistant', content: data.content }]
+        const toolResults = data.content
+          .filter(b => b.type === 'tool_use')
+          .map(t => ({ type: 'tool_result', tool_use_id: t.id, content: `Searched: ${t.input?.query}` }))
+        current = [...current, { role: 'user', content: toolResults }]
+        continue
+      }
+
+      if (data.stop_reason === 'end_turn') {
+        const textBlock = data.content.find(b => b.type === 'text')
+        if (!textBlock) throw new Error('No response')
+        const start = textBlock.text.indexOf('{')
+        const end = textBlock.text.lastIndexOf('}')
+        if (start === -1 || end === -1) {
+          return res.json({ player, stat: '', games: [], note: 'Could not parse stats.' })
+        }
+        const parsed = JSON.parse(textBlock.text.slice(start, end + 1))
+        console.log(`Player stats: ${player} — found ${parsed.games?.length || 0} games`)
+        return res.json(parsed)
+      }
+      throw new Error('Unexpected stop')
+    }
+    throw new Error('Search took too long')
+  } catch (e) {
+    console.error('Player stats error:', e.message)
+    res.status(500).json({ error: e.message })
+  }
+})
+
 function normalizePicks(raw) {
   return raw.map((p, i) => ({
     id: p.id || i + 1,
