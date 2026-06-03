@@ -131,10 +131,21 @@ function validateLines(picks, rawLines) {
 }
 
 async function fetchLinesServer() {
-  const target = encodeURIComponent(`https://api.prizepicks.com/projections?per_page=250&single_stat=true`)
-  const response = await fetch(`https://api.scraperapi.com?api_key=${process.env.SCRAPER_API_KEY}&url=${target}&ultra_premium=true`)
-  const data = await response.json()
-  if (!data.data || !data.included) return []
+  let data = null
+  for (let attempt = 0; attempt < 4; attempt++) {
+    if (attempt > 0) await sleep(4000)
+    try {
+      const target = encodeURIComponent(`https://api.prizepicks.com/projections?per_page=250&single_stat=true`)
+      const response = await fetch(`https://api.scraperapi.com?api_key=${process.env.SCRAPER_API_KEY}&url=${target}&ultra_premium=true`)
+      const text = await response.text()
+      data = JSON.parse(text)
+      break
+    } catch (e) {
+      console.log(`fetchLinesServer attempt ${attempt + 1} failed:`, e.message)
+      if (attempt === 3) return []
+    }
+  }
+  if (!data || !data.data || !data.included) return []
   const players = {}
   data.included.forEach(item => {
     if (item.type === 'new_player') {
