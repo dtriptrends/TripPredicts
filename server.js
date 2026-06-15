@@ -213,7 +213,7 @@ app.post('/picks', async (req, res) => {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'x-api-key': API_KEY, 'anthropic-version': '2023-06-01' },
       body: JSON.stringify({
-        model: 'claude-sonnet-4-20250514',
+       model: 'claude-sonnet-4-6',
         max_tokens: 4000,
         system: `You are a PrizePicks prop analyst. Output ONLY a valid JSON array. No text before or after. Start with [ end with ].`,
         messages: [{
