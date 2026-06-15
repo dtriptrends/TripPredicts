@@ -67,11 +67,16 @@ app.use(express.json({ limit: '10mb' }))
 // ===== REAL STATS FROM BALLDONTLIE =====
 const BDL_KEY = process.env.BALLDONTLIE_KEY
 
+// path     = BDL league slug (note: Counter-Strike is "cs", not "cs2")
+// statsPath = per-game stats endpoint. This differs per sport and was the WNBA 404:
+//             MLB is /stats, WNBA is /player_stats.
+// supported = false for LoL and CS2 because their game logs sit behind BDL's GOAT
+//             tier. The plan is ALL-STAR, so those calls 401. We fall back cleanly.
 const BDL_SPORTS = {
-  MLB:  { path: 'mlb',  season: 2026 },
-  WNBA: { path: 'wnba', season: 2026 },
-  LOL:  { path: 'lol',  season: 2026 },
-  CS2:  { path: 'cs2',  season: 2026 },
+  MLB:  { path: 'mlb',  statsPath: 'stats',        season: 2026, supported: true },
+  WNBA: { path: 'wnba', statsPath: 'player_stats', season: 2026, supported: true },
+  LOL:  { supported: false, reason: 'LoL game logs require the BALLDONTLIE GOAT tier. Your plan is ALL-STAR.' },
+  CS2:  { supported: false, reason: 'CS2 game logs require the BALLDONTLIE GOAT tier. Your plan is ALL-STAR.' },
 }
 
 const gamelogCache = {}
@@ -89,7 +94,12 @@ app.post('/player-gamelog', async (req, res) => {
     if (!player) throw new Error('No player provided')
     const lg = (league || '').toUpperCase()
     const sport = BDL_SPORTS[lg]
-    if (!sport) return res.json({ player, games: [], note: `${lg} stats not available yet.` })
+    if (!sport) return res.json({ player, league: lg, games: [], note: `${lg} stats not available yet.` })
+
+    // LoL / CS2: game logs need the GOAT tier, plan is ALL-STAR. Fall back, do not error.
+    if (!sport.supported) {
+      return res.json({ player, league: lg, games: [], supported: false, note: sport.reason })
+    }
 
     const cacheKey = `${lg}|${player.trim().toLowerCase()}`
     const cached = gamelogCache[cacheKey]
@@ -102,7 +112,7 @@ app.post('/player-gamelog', async (req, res) => {
     const pData = await bdlFetch(`https://api.balldontlie.io/${sport.path}/v1/players?search=${encodeURIComponent(searchTerm)}`)
     const players = pData.data || []
     if (players.length === 0) {
-      const payload = { player, games: [], note: 'Player not found in stats database.' }
+      const payload = { player, league: lg, games: [], note: 'Player not found in stats database.' }
       gamelogCache[cacheKey] = { data: payload, ts: Date.now() }
       return res.json(payload)
     }
@@ -112,16 +122,27 @@ app.post('/player-gamelog', async (req, res) => {
     if (!match) match = players.find(p => (p.full_name || '').toLowerCase() === lowerFull)
     if (!match) match = players[0]
 
-    // 2) pull recent game stats
-    const sData = await bdlFetch(`https://api.balldontlie.io/${sport.path}/v1/stats?player_ids[]=${match.id}&seasons[]=${sport.season}&per_page=15`)
+    // 2) pull this season's stats from the correct per-sport endpoint, then sort
+    //    by game date desc and keep the most recent 15. Fetching up to 100 and
+    //    sorting client-side means we get recent form no matter what order BDL
+    //    returns. If a row has no game.date the sort is a harmless no-op for it.
+    const sData = await bdlFetch(`https://api.balldontlie.io/${sport.path}/v1/${sport.statsPath}?player_ids[]=${match.id}&seasons[]=${sport.season}&per_page=100`)
     const rawGames = sData.data || []
+    const games = rawGames
+      .slice()
+      .sort((a, b) => {
+        const da = a.game && a.game.date ? new Date(a.game.date).getTime() : 0
+        const db = b.game && b.game.date ? new Date(b.game.date).getTime() : 0
+        return db - da
+      })
+      .slice(0, 15)
 
     const payload = {
       player: `${match.first_name} ${match.last_name}`,
       player_id: match.id,
       league: lg,
-      games: rawGames,
-      note: rawGames.length ? `${rawGames.length} recent games from BALLDONTLIE.` : 'No recent games found for this season.'
+      games,
+      note: games.length ? `${games.length} recent games from BALLDONTLIE.` : 'No recent games found for this season.'
     }
     gamelogCache[cacheKey] = { data: payload, ts: Date.now() }
     res.json(payload)
