@@ -64,6 +64,73 @@ app.post('/stripe/webhook', express.raw({ type: 'application/json' }), async (re
 // JSON middleware comes AFTER the webhook
 app.use(express.json({ limit: '10mb' }))
 
+// ===== REAL STATS FROM BALLDONTLIE =====
+const BDL_KEY = process.env.BALLDONTLIE_KEY
+
+const BDL_SPORTS = {
+  MLB:  { path: 'mlb',  season: 2026 },
+  WNBA: { path: 'wnba', season: 2026 },
+  LOL:  { path: 'lol',  season: 2026 },
+  CS2:  { path: 'cs2',  season: 2026 },
+}
+
+const gamelogCache = {}
+const GAMELOG_TTL = 60 * 60 * 1000 // 1 hour
+
+async function bdlFetch(url) {
+  const r = await fetch(url, { headers: { Authorization: BDL_KEY } })
+  if (!r.ok) throw new Error(`BDL ${r.status}`)
+  return r.json()
+}
+
+app.post('/player-gamelog', async (req, res) => {
+  try {
+    const { player, league } = req.body
+    if (!player) throw new Error('No player provided')
+    const lg = (league || '').toUpperCase()
+    const sport = BDL_SPORTS[lg]
+    if (!sport) return res.json({ player, games: [], note: `${lg} stats not available yet.` })
+
+    const cacheKey = `${lg}|${player.trim().toLowerCase()}`
+    const cached = gamelogCache[cacheKey]
+    if (cached && Date.now() - cached.ts < GAMELOG_TTL) {
+      return res.json(cached.data)
+    }
+
+    // 1) find the player's ID by last name
+    const searchTerm = player.trim().split(' ').slice(-1)[0]
+    const pData = await bdlFetch(`https://api.balldontlie.io/${sport.path}/v1/players?search=${encodeURIComponent(searchTerm)}`)
+    const players = pData.data || []
+    if (players.length === 0) {
+      const payload = { player, games: [], note: 'Player not found in stats database.' }
+      gamelogCache[cacheKey] = { data: payload, ts: Date.now() }
+      return res.json(payload)
+    }
+
+    const lowerFull = player.trim().toLowerCase()
+    let match = players.find(p => `${p.first_name} ${p.last_name}`.toLowerCase() === lowerFull)
+    if (!match) match = players.find(p => (p.full_name || '').toLowerCase() === lowerFull)
+    if (!match) match = players[0]
+
+    // 2) pull recent game stats
+    const sData = await bdlFetch(`https://api.balldontlie.io/${sport.path}/v1/stats?player_ids[]=${match.id}&seasons[]=${sport.season}&per_page=15`)
+    const rawGames = sData.data || []
+
+    const payload = {
+      player: `${match.first_name} ${match.last_name}`,
+      player_id: match.id,
+      league: lg,
+      games: rawGames,
+      note: rawGames.length ? `${rawGames.length} recent games from BALLDONTLIE.` : 'No recent games found for this season.'
+    }
+    gamelogCache[cacheKey] = { data: payload, ts: Date.now() }
+    res.json(payload)
+  } catch (e) {
+    console.error('Gamelog error:', e.message)
+    res.status(500).json({ error: e.message })
+  }
+})
+
 function sortLines(rawLines, league) {
   if (!rawLines) return []
   const PRIORITY = { 'NBA': 1, 'MLB': 2, 'NHL': 3, 'NFL': 4, 'CS2': 5, 'LOL': 5, 'VALORANT': 5, 'COD': 5 }
@@ -213,7 +280,7 @@ app.post('/picks', async (req, res) => {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'x-api-key': API_KEY, 'anthropic-version': '2023-06-01' },
       body: JSON.stringify({
-       model: 'claude-sonnet-4-6',
+        model: 'claude-sonnet-4-6',
         max_tokens: 4000,
         system: `You are a PrizePicks prop analyst. Output ONLY a valid JSON array. No text before or after. Start with [ end with ].`,
         messages: [{
@@ -279,7 +346,7 @@ app.post('/gold', async (req, res) => {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'x-api-key': API_KEY, 'anthropic-version': '2023-06-01' },
       body: JSON.stringify({
-        model: 'claude-sonnet-4-20250514',
+        model: 'claude-sonnet-4-6',
         max_tokens: 4000,
         system: `You are a PrizePicks prop analyst. Output ONLY a valid JSON array. No text before or after. Start with [ end with ].`,
         messages: [{
