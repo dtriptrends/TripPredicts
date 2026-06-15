@@ -88,6 +88,29 @@ async function bdlFetch(url) {
   return r.json()
 }
 
+// Recency key that works across both stat shapes:
+// WNBA rows have a nested game object with a real date; MLB rows have a flat
+// numeric game_id that climbs over the season (oldest games = lowest id).
+// Higher key = more recent, so sorting desc gives recent form for both.
+function gameSortKey(row) {
+  if (row.game && row.game.date) return new Date(row.game.date).getTime()
+  if (row.game_id) return Number(row.game_id) || 0
+  if (row.game && row.game.id) return Number(row.game.id) || 0
+  return 0
+}
+
+// Drop did-not-play rows so a DNP never counts as a miss in a hit-rate.
+function bdlPlayed(row, lg) {
+  if (lg === 'WNBA') return (Number(row.min) || 0) > 0
+  if (lg === 'MLB') {
+    const pa = Number(row.plate_appearances) || 0
+    const ab = Number(row.at_bats) || 0
+    const ip = Number(row.ip) || 0
+    return pa > 0 || ab > 0 || ip > 0
+  }
+  return true
+}
+
 app.post('/player-gamelog', async (req, res) => {
   try {
     const { player, league } = req.body
@@ -122,19 +145,16 @@ app.post('/player-gamelog', async (req, res) => {
     if (!match) match = players.find(p => (p.full_name || '').toLowerCase() === lowerFull)
     if (!match) match = players[0]
 
-    // 2) pull this season's stats from the correct per-sport endpoint, then sort
-    //    by game date desc and keep the most recent 15. Fetching up to 100 and
-    //    sorting client-side means we get recent form no matter what order BDL
-    //    returns. If a row has no game.date the sort is a harmless no-op for it.
+    // 2) pull this season's stats from the correct per-sport endpoint, drop
+    //    did-not-play rows, then sort most-recent-first and keep 15. We sort by
+    //    real date when the API gives one (WNBA) and by game_id when it does not
+    //    (MLB returns oldest-first with a flat game_id, so without this you'd get
+    //    the earliest games of the season instead of recent form).
     const sData = await bdlFetch(`https://api.balldontlie.io/${sport.path}/v1/${sport.statsPath}?player_ids[]=${match.id}&seasons[]=${sport.season}&per_page=100`)
     const rawGames = sData.data || []
     const games = rawGames
-      .slice()
-      .sort((a, b) => {
-        const da = a.game && a.game.date ? new Date(a.game.date).getTime() : 0
-        const db = b.game && b.game.date ? new Date(b.game.date).getTime() : 0
-        return db - da
-      })
+      .filter(g => bdlPlayed(g, lg))
+      .sort((a, b) => gameSortKey(b) - gameSortKey(a))
       .slice(0, 15)
 
     const payload = {
