@@ -67,14 +67,19 @@ app.use(express.json({ limit: '10mb' }))
 // ===== REAL STATS FROM BALLDONTLIE =====
 const BDL_KEY = process.env.BALLDONTLIE_KEY
 
-// path     = BDL league slug (note: Counter-Strike is "cs", not "cs2")
-// statsPath = per-game stats endpoint. This differs per sport and was the WNBA 404:
-//             MLB is /stats, WNBA is /player_stats.
-// supported = false for LoL and CS2 because their game logs sit behind BDL's GOAT
-//             tier. The plan is ALL-STAR, so those calls 401. We fall back cleanly.
+// path          = BDL league slug (note: Counter-Strike is "cs", not "cs2")
+// statsPath      = per-game stats endpoint. Differs per sport and was the WNBA 404:
+//                 MLB is /stats, WNBA is /player_stats.
+// needsGameDates = MLB stat rows carry no date and /mlb/v1/stats has no date,
+//                 sort, or season_type filter, so it mixes spring training in with
+//                 the regular season. We join real dates from /mlb/v1/games
+//                 (season_type=regular) to order by date and drop spring training.
+//                 WNBA rows already carry a real game.date, so no join needed.
+// supported      = false for LoL and CS2 because their game logs sit behind BDL's
+//                 GOAT tier. The plan is ALL-STAR, so those calls 401. Fall back.
 const BDL_SPORTS = {
-  MLB:  { path: 'mlb',  statsPath: 'stats',        season: 2026, supported: true },
-  WNBA: { path: 'wnba', statsPath: 'player_stats', season: 2026, supported: true },
+  MLB:  { path: 'mlb',  statsPath: 'stats',        season: 2026, supported: true, needsGameDates: true },
+  WNBA: { path: 'wnba', statsPath: 'player_stats', season: 2026, supported: true, needsGameDates: false },
   LOL:  { supported: false, reason: 'LoL game logs require the BALLDONTLIE GOAT tier. Your plan is ALL-STAR.' },
   CS2:  { supported: false, reason: 'CS2 game logs require the BALLDONTLIE GOAT tier. Your plan is ALL-STAR.' },
 }
@@ -88,15 +93,17 @@ async function bdlFetch(url) {
   return r.json()
 }
 
-// Recency key that works across both stat shapes:
-// WNBA rows have a nested game object with a real date; MLB rows have a flat
-// numeric game_id that climbs over the season (oldest games = lowest id).
-// Higher key = more recent, so sorting desc gives recent form for both.
+// Recency key for WNBA, whose rows carry a nested game object with a real date.
 function gameSortKey(row) {
   if (row.game && row.game.date) return new Date(row.game.date).getTime()
-  if (row.game_id) return Number(row.game_id) || 0
   if (row.game && row.game.id) return Number(row.game.id) || 0
   return 0
+}
+
+// Pull a usable date string off a WNBA row for the normalized `date` field.
+function rowDate(row) {
+  if (row.game && row.game.date) return row.game.date
+  return null
 }
 
 // Drop did-not-play rows so a DNP never counts as a miss in a hit-rate.
@@ -145,17 +152,37 @@ app.post('/player-gamelog', async (req, res) => {
     if (!match) match = players.find(p => (p.full_name || '').toLowerCase() === lowerFull)
     if (!match) match = players[0]
 
-    // 2) pull this season's stats from the correct per-sport endpoint, drop
-    //    did-not-play rows, then sort most-recent-first and keep 15. We sort by
-    //    real date when the API gives one (WNBA) and by game_id when it does not
-    //    (MLB returns oldest-first with a flat game_id, so without this you'd get
-    //    the earliest games of the season instead of recent form).
+    // 2) pull this season's stats, drop did-not-play rows, attach a real date,
+    //    sort most-recent-first, keep 15. MLB needs real dates joined from the
+    //    games endpoint (its stat rows have none and mix spring training in);
+    //    WNBA rows already carry game.date.
     const sData = await bdlFetch(`https://api.balldontlie.io/${sport.path}/v1/${sport.statsPath}?player_ids[]=${match.id}&seasons[]=${sport.season}&per_page=100`)
-    const rawGames = sData.data || []
-    const games = rawGames
-      .filter(g => bdlPlayed(g, lg))
-      .sort((a, b) => gameSortKey(b) - gameSortKey(a))
-      .slice(0, 15)
+    const rawGames = (sData.data || []).filter(g => bdlPlayed(g, lg))
+
+    let games
+    if (sport.needsGameDates) {
+      // Build game_id -> date from the player's team's REGULAR-season games.
+      // This drops spring training (those game_ids won't be in the map) and lets
+      // us order by true date. One extra call, only on cache miss.
+      const teamId = match.team && match.team.id
+      const dateMap = {}
+      if (teamId) {
+        const gData = await bdlFetch(`https://api.balldontlie.io/${sport.path}/v1/games?seasons[]=${sport.season}&team_ids[]=${teamId}&season_type=regular&per_page=100`)
+        for (const g of (gData.data || [])) {
+          if (g.id && g.date) dateMap[g.id] = g.date
+        }
+      }
+      games = rawGames
+        .map(g => ({ ...g, date: dateMap[g.game_id] || null }))
+        .filter(g => g.date) // keep only regular-season games we have a date for
+        .sort((a, b) => new Date(b.date) - new Date(a.date))
+        .slice(0, 15)
+    } else {
+      games = rawGames
+        .map(g => ({ ...g, date: rowDate(g) }))
+        .sort((a, b) => gameSortKey(b) - gameSortKey(a))
+        .slice(0, 15)
+    }
 
     const payload = {
       player: `${match.first_name} ${match.last_name}`,
