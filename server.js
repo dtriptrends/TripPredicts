@@ -75,13 +75,16 @@ const BDL_KEY = process.env.BALLDONTLIE_KEY
 //                 the regular season. We join real dates from /mlb/v1/games
 //                 (season_type=regular) to order by date and drop spring training.
 //                 WNBA rows already carry a real game.date, so no join needed.
-// supported      = false for LoL and CS2 because their game logs sit behind BDL's
-//                 GOAT tier. The plan is ALL-STAR, so those calls 401. Fall back.
+// kind           = which fetch strategy to use. ball sports (MLB/WNBA) have a
+//                 player-centric stats endpoint. LoL has player_match_map_stats
+//                 with a player_id filter (one call). CS2 has no player endpoint,
+//                 so we go player -> team -> recent matches -> per-match stats.
+//                 LoL and CS2 stat logs require the GOAT tier.
 const BDL_SPORTS = {
-  MLB:  { path: 'mlb',  statsPath: 'stats',        season: 2026, supported: true, needsGameDates: true },
-  WNBA: { path: 'wnba', statsPath: 'player_stats', season: 2026, supported: true, needsGameDates: false },
-  LOL:  { supported: false, reason: 'LoL game logs require the BALLDONTLIE GOAT tier. Your plan is ALL-STAR.' },
-  CS2:  { supported: false, reason: 'CS2 game logs require the BALLDONTLIE GOAT tier. Your plan is ALL-STAR.' },
+  MLB:  { path: 'mlb',  statsPath: 'stats',        season: 2026, supported: true, needsGameDates: true,  kind: 'ball' },
+  WNBA: { path: 'wnba', statsPath: 'player_stats', season: 2026, supported: true, needsGameDates: false, kind: 'ball' },
+  LOL:  { path: 'lol',  supported: true, kind: 'lol' },
+  CS2:  { path: 'cs',   supported: true, kind: 'cs' },
 }
 
 const gamelogCache = {}
@@ -118,6 +121,138 @@ function bdlPlayed(row, lg) {
   return true
 }
 
+// MLB / WNBA: player-centric stats endpoint. MLB needs the date join described
+// above; WNBA carries game.date already.
+async function ballGamelog(player, lg, sport) {
+  const searchTerm = player.trim().split(' ').slice(-1)[0]
+  const pData = await bdlFetch(`https://api.balldontlie.io/${sport.path}/v1/players?search=${encodeURIComponent(searchTerm)}`)
+  const players = pData.data || []
+  if (players.length === 0) return { player, league: lg, games: [], note: 'Player not found in stats database.' }
+
+  const lowerFull = player.trim().toLowerCase()
+  let match = players.find(p => `${p.first_name} ${p.last_name}`.toLowerCase() === lowerFull)
+  if (!match) match = players.find(p => (p.full_name || '').toLowerCase() === lowerFull)
+  if (!match) match = players[0]
+
+  let games = []
+  if (sport.needsGameDates) {
+    const teamId = match.team && match.team.id
+    if (teamId) {
+      const gData = await bdlFetch(`https://api.balldontlie.io/${sport.path}/v1/games?seasons[]=${sport.season}&team_ids[]=${teamId}&season_type=regular&per_page=100`)
+      const recent = (gData.data || [])
+        .filter(g => g.id && g.date)
+        .sort((a, b) => new Date(b.date) - new Date(a.date))
+        .slice(0, 25)
+      const dateMap = {}
+      const idParams = recent.map(g => { dateMap[g.id] = g.date; return `game_ids[]=${g.id}` }).join('&')
+      if (idParams) {
+        const sData = await bdlFetch(`https://api.balldontlie.io/${sport.path}/v1/${sport.statsPath}?player_ids[]=${match.id}&${idParams}&per_page=100`)
+        games = (sData.data || [])
+          .filter(g => bdlPlayed(g, lg))
+          .map(g => ({ ...g, date: dateMap[g.game_id] || null }))
+          .filter(g => g.date)
+          .sort((a, b) => new Date(b.date) - new Date(a.date))
+          .slice(0, 15)
+      }
+    }
+  } else {
+    const sData = await bdlFetch(`https://api.balldontlie.io/${sport.path}/v1/${sport.statsPath}?player_ids[]=${match.id}&seasons[]=${sport.season}&per_page=100`)
+    games = (sData.data || [])
+      .filter(g => bdlPlayed(g, lg))
+      .map(g => ({ ...g, date: rowDate(g) }))
+      .sort((a, b) => gameSortKey(b) - gameSortKey(a))
+      .slice(0, 15)
+  }
+  return {
+    player: `${match.first_name} ${match.last_name}`,
+    player_id: match.id,
+    league: lg,
+    games,
+    note: games.length ? `${games.length} recent games from BALLDONTLIE.` : 'No recent games found for this season.'
+  }
+}
+
+// LoL: one call. player_match_map_stats accepts a player_id filter and returns
+// per-map (per-game) rows directly. No date on the row, so we order by row id
+// (auto-increment) as a recency proxy. Each row is one map of one match.
+async function lolGamelog(player, lg) {
+  const term = player.trim()
+  const pData = await bdlFetch(`https://api.balldontlie.io/lol/v1/players?search=${encodeURIComponent(term)}`)
+  const players = pData.data || []
+  if (!players.length) return { player, league: lg, games: [], note: 'Player not found in LoL database.' }
+  const lower = term.toLowerCase()
+  const match = players.find(p => (p.nickname || '').toLowerCase() === lower) || players[0]
+
+  const sData = await bdlFetch(`https://api.balldontlie.io/lol/v1/player_match_map_stats?player_id=${match.id}&per_page=100`)
+  const games = (sData.data || [])
+    .map(g => ({
+      kills: g.kills, deaths: g.deaths, assists: g.assists,
+      creep_score: g.creep_score, gold_earned: g.gold_earned,
+      damage: g.total_damage_dealt_to_champions,
+      kill_participation: g.kill_participation,
+      wards_placed: g.wards_placed,
+      champion: g.champion && g.champion.name,
+      match_map_id: g.match_map_id,
+      _order: g.id || g.match_map_id || 0,
+      date: null
+    }))
+    .sort((a, b) => (b._order || 0) - (a._order || 0))
+    .slice(0, 20)
+  return {
+    player: match.nickname,
+    player_id: match.id,
+    league: lg,
+    games,
+    note: games.length ? `${games.length} recent maps from BALLDONTLIE.` : 'No recent maps found.'
+  }
+}
+
+// CS2: no player-centric endpoint. Find the player, get their team, list the
+// team's recent matches, then pull per-match player stats one match at a time.
+// These are match totals (summed across the maps played in that match).
+async function csGamelog(player, lg) {
+  const term = player.trim()
+  const pData = await bdlFetch(`https://api.balldontlie.io/cs/v1/players?search=${encodeURIComponent(term)}`)
+  const players = pData.data || []
+  if (!players.length) return { player, league: lg, games: [], note: 'Player not found in CS2 database.' }
+  const lower = term.toLowerCase()
+  const match = players.find(p => (p.nickname || '').toLowerCase() === lower) || players[0]
+  const teamId = match.team && match.team.id
+  if (!teamId) return { player: match.nickname, player_id: match.id, league: lg, games: [], note: 'No team on record for this player.' }
+
+  const mData = await bdlFetch(`https://api.balldontlie.io/cs/v1/matches?team_ids[]=${teamId}&per_page=25`)
+  const matches = (mData.data || [])
+    .filter(m => m.id)
+    .sort((a, b) => new Date(b.start_time || 0) - new Date(a.start_time || 0))
+    .slice(0, 10) // bound the per-match fan-out
+
+  const games = []
+  for (const m of matches) {
+    try {
+      const sData = await bdlFetch(`https://api.balldontlie.io/cs/v1/player_match_stats?match_id=${m.id}`)
+      const row = (sData.data || []).find(r => r.player && r.player.id === match.id)
+      if (row) {
+        games.push({
+          kills: row.kills, deaths: row.deaths, assists: row.assists,
+          adr: row.adr, kast: row.kast, rating: row.rating,
+          headshot_percentage: row.headshot_percentage,
+          first_kills: row.first_kills, first_deaths: row.first_deaths,
+          match_id: m.id,
+          date: m.start_time || null
+        })
+      }
+    } catch (e) { /* skip a match that has no stats yet */ }
+  }
+  games.sort((a, b) => new Date(b.date || 0) - new Date(a.date || 0))
+  return {
+    player: match.nickname,
+    player_id: match.id,
+    league: lg,
+    games,
+    note: games.length ? `${games.length} recent matches from BALLDONTLIE (match totals).` : 'No recent matches found.'
+  }
+}
+
 app.post('/player-gamelog', async (req, res) => {
   try {
     const { player, league } = req.body
@@ -125,78 +260,17 @@ app.post('/player-gamelog', async (req, res) => {
     const lg = (league || '').toUpperCase()
     const sport = BDL_SPORTS[lg]
     if (!sport) return res.json({ player, league: lg, games: [], note: `${lg} stats not available yet.` })
-
-    // LoL / CS2: game logs need the GOAT tier, plan is ALL-STAR. Fall back, do not error.
-    if (!sport.supported) {
-      return res.json({ player, league: lg, games: [], supported: false, note: sport.reason })
-    }
+    if (!sport.supported) return res.json({ player, league: lg, games: [], supported: false, note: sport.reason })
 
     const cacheKey = `${lg}|${player.trim().toLowerCase()}`
     const cached = gamelogCache[cacheKey]
-    if (cached && Date.now() - cached.ts < GAMELOG_TTL) {
-      return res.json(cached.data)
-    }
+    if (cached && Date.now() - cached.ts < GAMELOG_TTL) return res.json(cached.data)
 
-    // 1) find the player's ID by last name
-    const searchTerm = player.trim().split(' ').slice(-1)[0]
-    const pData = await bdlFetch(`https://api.balldontlie.io/${sport.path}/v1/players?search=${encodeURIComponent(searchTerm)}`)
-    const players = pData.data || []
-    if (players.length === 0) {
-      const payload = { player, league: lg, games: [], note: 'Player not found in stats database.' }
-      gamelogCache[cacheKey] = { data: payload, ts: Date.now() }
-      return res.json(payload)
-    }
+    let payload
+    if (sport.kind === 'lol') payload = await lolGamelog(player, lg)
+    else if (sport.kind === 'cs') payload = await csGamelog(player, lg)
+    else payload = await ballGamelog(player, lg, sport)
 
-    const lowerFull = player.trim().toLowerCase()
-    let match = players.find(p => `${p.first_name} ${p.last_name}`.toLowerCase() === lowerFull)
-    if (!match) match = players.find(p => (p.full_name || '').toLowerCase() === lowerFull)
-    if (!match) match = players[0]
-
-    // 2) pull recent games. MLB needs special handling: its stat rows have no
-    //    date, /mlb/v1/stats returns oldest-first with no sort or date filter,
-    //    and per_page caps at 100, so blindly pulling stats gives spring training
-    //    plus the early season and misses recent games. Instead we drive off the
-    //    games list (which has real dates and a season_type=regular filter), take
-    //    the most recent game IDs, and request stats for exactly those games.
-    //    WNBA rows already carry game.date and there are few games, so one call.
-    let games = []
-
-    if (sport.needsGameDates) {
-      const teamId = match.team && match.team.id
-      if (teamId) {
-        const gData = await bdlFetch(`https://api.balldontlie.io/${sport.path}/v1/games?seasons[]=${sport.season}&team_ids[]=${teamId}&season_type=regular&per_page=100`)
-        const recent = (gData.data || [])
-          .filter(g => g.id && g.date)
-          .sort((a, b) => new Date(b.date) - new Date(a.date))
-          .slice(0, 25) // recent IDs, buffer for games the player missed
-        const dateMap = {}
-        const idParams = recent.map(g => { dateMap[g.id] = g.date; return `game_ids[]=${g.id}` }).join('&')
-        if (idParams) {
-          const sData = await bdlFetch(`https://api.balldontlie.io/${sport.path}/v1/${sport.statsPath}?player_ids[]=${match.id}&${idParams}&per_page=100`)
-          games = (sData.data || [])
-            .filter(g => bdlPlayed(g, lg))
-            .map(g => ({ ...g, date: dateMap[g.game_id] || null }))
-            .filter(g => g.date)
-            .sort((a, b) => new Date(b.date) - new Date(a.date))
-            .slice(0, 15)
-        }
-      }
-    } else {
-      const sData = await bdlFetch(`https://api.balldontlie.io/${sport.path}/v1/${sport.statsPath}?player_ids[]=${match.id}&seasons[]=${sport.season}&per_page=100`)
-      games = (sData.data || [])
-        .filter(g => bdlPlayed(g, lg))
-        .map(g => ({ ...g, date: rowDate(g) }))
-        .sort((a, b) => gameSortKey(b) - gameSortKey(a))
-        .slice(0, 15)
-    }
-
-    const payload = {
-      player: `${match.first_name} ${match.last_name}`,
-      player_id: match.id,
-      league: lg,
-      games,
-      note: games.length ? `${games.length} recent games from BALLDONTLIE.` : 'No recent games found for this season.'
-    }
     gamelogCache[cacheKey] = { data: payload, ts: Date.now() }
     res.json(payload)
   } catch (e) {

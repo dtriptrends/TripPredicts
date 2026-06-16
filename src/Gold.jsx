@@ -84,10 +84,11 @@ async function fetchAllLines(server) {
       }
     })
     const now = new Date()
-    // Group projections by player + stat so the standard, goblin and demon
-    // variants of the same prop collapse into one line. We show the standard
-    // line by default and keep the goblin/demon values as alternates.
-    const groups = {}
+    // Board is built from STANDARD lines only, kept exactly as PrizePicks sends
+    // them. Demon and goblin variants are set aside as alternates for the chip,
+    // never shown as the main line and never merged into the standard line.
+    const altMap = {} // "name|stat" -> { goblin, demon }
+    const standardRows = []
     data.data.forEach(proj => {
       const a = proj.attributes
       const startTime = new Date(a.start_time)
@@ -99,39 +100,30 @@ async function fetchAllLines(server) {
       if (!player || !player.name) return
       const oddsType = (a.odds_type || 'standard').toLowerCase()
       const key = `${player.name}|${a.stat_display_name}`
-      if (!groups[key]) {
-        groups[key] = {
-          name: player.name, team: player.team, league: player.league, image: player.image,
-          stat: a.stat_display_name,
-          start_time: startTime.toLocaleTimeString('en-US', { timeZone: 'America/New_York', hour: 'numeric', minute: '2-digit', hour12: true }) + ' ET',
-          date: startTime.toLocaleDateString('en-US', { timeZone: 'America/New_York', weekday: 'short', month: 'short', day: 'numeric' }),
-          variants: {}
-        }
+      const lineVal = Number(a.line_score)
+      if (isNaN(lineVal)) return
+      if (oddsType === 'demon' || oddsType === 'goblin') {
+        if (!altMap[key]) altMap[key] = {}
+        altMap[key][oddsType] = lineVal
+        return
       }
-      groups[key].variants[oddsType] = Number(a.line_score)
-    })
-    const results = []
-    Object.values(groups).forEach(g => {
-      const v = g.variants
-      const line = v.standard != null ? v.standard : (v.goblin != null ? v.goblin : v.demon)
-      if (line == null || isNaN(line)) return
-      results.push({
-        name: g.name,
-        team: g.team,
-        league: g.league,
-        image: g.image,
-        stat: g.stat,
-        line,
-        oddsType: v.standard != null ? 'standard' : (v.goblin != null ? 'goblin' : 'demon'),
-        altLines: {
-          standard: v.standard != null ? v.standard : null,
-          goblin: v.goblin != null ? v.goblin : null,
-          demon: v.demon != null ? v.demon : null
-        },
-        start_time: g.start_time,
-        date: g.date
+      standardRows.push({
+        name: player.name, team: player.team, league: player.league, image: player.image,
+        stat: a.stat_display_name, line: lineVal, key,
+        start_time: startTime.toLocaleTimeString('en-US', { timeZone: 'America/New_York', hour: 'numeric', minute: '2-digit', hour12: true }) + ' ET',
+        date: startTime.toLocaleDateString('en-US', { timeZone: 'America/New_York', weekday: 'short', month: 'short', day: 'numeric' })
       })
     })
+    const results = standardRows.map(r => ({
+      name: r.name, team: r.team, league: r.league, image: r.image,
+      stat: r.stat, line: r.line, oddsType: 'standard',
+      altLines: {
+        standard: r.line,
+        goblin: altMap[r.key] && altMap[r.key].goblin != null ? altMap[r.key].goblin : null,
+        demon: altMap[r.key] && altMap[r.key].demon != null ? altMap[r.key].demon : null
+      },
+      start_time: r.start_time, date: r.date
+    }))
     return results
   } catch (e) {
     console.log('Fetch error:', e.message)
