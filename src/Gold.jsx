@@ -83,25 +83,53 @@ async function fetchAllLines(server) {
         }
       }
     })
-    const results = []
     const now = new Date()
+    // Group projections by player + stat so the standard, goblin and demon
+    // variants of the same prop collapse into one line. We show the standard
+    // line by default and keep the goblin/demon values as alternates.
+    const groups = {}
     data.data.forEach(proj => {
-      const startTime = new Date(proj.attributes.start_time)
+      const a = proj.attributes
+      const startTime = new Date(a.start_time)
       const hoursUntil = (startTime - now) / (1000 * 60 * 60)
-      if (proj.attributes.status !== 'pre_game') return
+      if (a.status !== 'pre_game') return
       if (hoursUntil < 0 || hoursUntil > 36) return
       const playerId = proj.relationships?.new_player?.data?.id
       const player = players[playerId]
       if (!player || !player.name) return
+      const oddsType = (a.odds_type || 'standard').toLowerCase()
+      const key = `${player.name}|${a.stat_display_name}`
+      if (!groups[key]) {
+        groups[key] = {
+          name: player.name, team: player.team, league: player.league, image: player.image,
+          stat: a.stat_display_name,
+          start_time: startTime.toLocaleTimeString('en-US', { timeZone: 'America/New_York', hour: 'numeric', minute: '2-digit', hour12: true }) + ' ET',
+          date: startTime.toLocaleDateString('en-US', { timeZone: 'America/New_York', weekday: 'short', month: 'short', day: 'numeric' }),
+          variants: {}
+        }
+      }
+      groups[key].variants[oddsType] = Number(a.line_score)
+    })
+    const results = []
+    Object.values(groups).forEach(g => {
+      const v = g.variants
+      const line = v.standard != null ? v.standard : (v.goblin != null ? v.goblin : v.demon)
+      if (line == null || isNaN(line)) return
       results.push({
-        name: player.name,
-        team: player.team,
-        league: player.league,
-        image: player.image,
-        stat: proj.attributes.stat_display_name,
-        line: proj.attributes.line_score,
-        start_time: startTime.toLocaleTimeString('en-US', { timeZone: 'America/New_York', hour: 'numeric', minute: '2-digit', hour12: true }) + ' ET',
-        date: startTime.toLocaleDateString('en-US', { timeZone: 'America/New_York', weekday: 'short', month: 'short', day: 'numeric' })
+        name: g.name,
+        team: g.team,
+        league: g.league,
+        image: g.image,
+        stat: g.stat,
+        line,
+        oddsType: v.standard != null ? 'standard' : (v.goblin != null ? 'goblin' : 'demon'),
+        altLines: {
+          standard: v.standard != null ? v.standard : null,
+          goblin: v.goblin != null ? v.goblin : null,
+          demon: v.demon != null ? v.demon : null
+        },
+        start_time: g.start_time,
+        date: g.date
       })
     })
     return results

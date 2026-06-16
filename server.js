@@ -152,33 +152,39 @@ app.post('/player-gamelog', async (req, res) => {
     if (!match) match = players.find(p => (p.full_name || '').toLowerCase() === lowerFull)
     if (!match) match = players[0]
 
-    // 2) pull this season's stats, drop did-not-play rows, attach a real date,
-    //    sort most-recent-first, keep 15. MLB needs real dates joined from the
-    //    games endpoint (its stat rows have none and mix spring training in);
-    //    WNBA rows already carry game.date.
-    const sData = await bdlFetch(`https://api.balldontlie.io/${sport.path}/v1/${sport.statsPath}?player_ids[]=${match.id}&seasons[]=${sport.season}&per_page=100`)
-    const rawGames = (sData.data || []).filter(g => bdlPlayed(g, lg))
+    // 2) pull recent games. MLB needs special handling: its stat rows have no
+    //    date, /mlb/v1/stats returns oldest-first with no sort or date filter,
+    //    and per_page caps at 100, so blindly pulling stats gives spring training
+    //    plus the early season and misses recent games. Instead we drive off the
+    //    games list (which has real dates and a season_type=regular filter), take
+    //    the most recent game IDs, and request stats for exactly those games.
+    //    WNBA rows already carry game.date and there are few games, so one call.
+    let games = []
 
-    let games
     if (sport.needsGameDates) {
-      // Build game_id -> date from the player's team's REGULAR-season games.
-      // This drops spring training (those game_ids won't be in the map) and lets
-      // us order by true date. One extra call, only on cache miss.
       const teamId = match.team && match.team.id
-      const dateMap = {}
       if (teamId) {
         const gData = await bdlFetch(`https://api.balldontlie.io/${sport.path}/v1/games?seasons[]=${sport.season}&team_ids[]=${teamId}&season_type=regular&per_page=100`)
-        for (const g of (gData.data || [])) {
-          if (g.id && g.date) dateMap[g.id] = g.date
+        const recent = (gData.data || [])
+          .filter(g => g.id && g.date)
+          .sort((a, b) => new Date(b.date) - new Date(a.date))
+          .slice(0, 25) // recent IDs, buffer for games the player missed
+        const dateMap = {}
+        const idParams = recent.map(g => { dateMap[g.id] = g.date; return `game_ids[]=${g.id}` }).join('&')
+        if (idParams) {
+          const sData = await bdlFetch(`https://api.balldontlie.io/${sport.path}/v1/${sport.statsPath}?player_ids[]=${match.id}&${idParams}&per_page=100`)
+          games = (sData.data || [])
+            .filter(g => bdlPlayed(g, lg))
+            .map(g => ({ ...g, date: dateMap[g.game_id] || null }))
+            .filter(g => g.date)
+            .sort((a, b) => new Date(b.date) - new Date(a.date))
+            .slice(0, 15)
         }
       }
-      games = rawGames
-        .map(g => ({ ...g, date: dateMap[g.game_id] || null }))
-        .filter(g => g.date) // keep only regular-season games we have a date for
-        .sort((a, b) => new Date(b.date) - new Date(a.date))
-        .slice(0, 15)
     } else {
-      games = rawGames
+      const sData = await bdlFetch(`https://api.balldontlie.io/${sport.path}/v1/${sport.statsPath}?player_ids[]=${match.id}&seasons[]=${sport.season}&per_page=100`)
+      games = (sData.data || [])
+        .filter(g => bdlPlayed(g, lg))
         .map(g => ({ ...g, date: rowDate(g) }))
         .sort((a, b) => gameSortKey(b) - gameSortKey(a))
         .slice(0, 15)
@@ -271,6 +277,8 @@ function validateLines(picks, rawLines) {
       p.team = match.team || p.team
       if (match.start_time) p.time = match.start_time
       if (match.date) p.date = match.date
+      if (match.oddsType) p.oddsType = match.oddsType
+      if (match.altLines) p.altLines = match.altLines
     }
     return p
   })
@@ -371,6 +379,7 @@ Rules:
 - dir must be HIGHER or LOWER based on clear statistical evidence
 - conf is 50-95
 - record: short specific statement like "11 of last 14 games hit this line"
+- Vary stat categories. Do not lean only on points and rebounds. Mix in props like 3-pointers made, shot attempts, steals, blocks, total bases, strikeouts and others when the lines and form support them
 - NEVER pick the same player more than once
 - Give exactly ${pickCount} picks`
         }]
@@ -437,6 +446,7 @@ Rules:
 - conf must be 90 or above — never assign below 90 on this endpoint
 - dir is HIGHER or LOWER based on real statistical evidence — never guess
 - record: MUST be specific like "Hit in 11 of last 14 games" or "Averaged well above this line over last 10 games"
+- Vary stat categories when the data supports it. Do not lean only on points and rebounds. Mix in 3-pointers made, shot attempts, steals, blocks, total bases, strikeouts and other categories
 - NEVER pick the same player twice
 - Always return at least 3 picks`
         }]

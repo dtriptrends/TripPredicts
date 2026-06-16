@@ -16,22 +16,36 @@ function bdlStatValue(league, g, propLabel) {
   if (league === 'WNBA') {
     const pts = +g.pts || 0, reb = +g.reb || 0, ast = +g.ast || 0
     const stl = +g.stl || 0, blk = +g.blk || 0
+    const oreb = +g.oreb || 0, dreb = +g.dreb || 0
+    const fg3m = +g.fg3m || 0, fg3a = +g.fg3a || 0
+    const fgm = +g.fgm || 0, fga = +g.fga || 0
+    const ftm = +g.ftm || 0, fta = +g.fta || 0
+    const tov = +g.turnover || 0, pf = +g.pf || 0
+    const isAtt = p.includes('attempt')
     const hasPts = p.includes('point') || p.includes('pts')
     const hasReb = p.includes('rebound') || p.includes('reb')
     const hasAst = p.includes('assist') || p.includes('ast')
+
+    // combos first
     if (hasPts && hasReb && hasAst) return pts + reb + ast
     if (hasPts && hasReb) return pts + reb
     if (hasPts && hasAst) return pts + ast
     if (hasReb && hasAst) return reb + ast
     if ((p.includes('blk') || p.includes('block')) && (p.includes('stl') || p.includes('steal'))) return blk + stl
-    if (p.includes('three') || p.includes('3-pt') || p.includes('3pt') || p.includes('3 pt')) return +g.fg3m || 0
-    if (p.includes('free throw')) return +g.ftm || 0
-    if (p.includes('fg') && p.includes('made')) return +g.fgm || 0
-    if (p.includes('turnover')) return +g.turnover || 0
-    if (hasReb) return reb
-    if (hasAst) return ast
+
+    // shooting (check three before fg so "3-pt" never falls into fg)
+    if (p.includes('three') || p.includes('3-pt') || p.includes('3pt') || p.includes('3 pt') || p.includes('3-point')) return isAtt ? fg3a : fg3m
+    if (p.includes('free throw')) return isAtt ? fta : ftm
+    if (p.includes('field goal') || (p.includes('fg') && !p.includes('fg3'))) return isAtt ? fga : fgm
+
+    if (p.includes('offensive') && hasReb) return oreb
+    if (p.includes('defensive') && hasReb) return dreb
+    if (p.includes('turnover')) return tov
+    if (p.includes('foul')) return pf
     if (p.includes('steal')) return stl
     if (p.includes('block')) return blk
+    if (hasReb) return reb
+    if (hasAst) return ast
     if (hasPts) return pts
     return null
   }
@@ -59,6 +73,7 @@ function bdlStatValue(league, g, propLabel) {
     if (p.includes('rbi')) return rbi
     if (p.includes('run')) return runs
     if (p.includes('strikeout') || p === 'k') return +g.k || 0
+    if (p.includes('at bat') || p.includes('at-bat')) return +g.at_bats || 0
     if (p.includes('hit')) return hits
     return null
   }
@@ -93,6 +108,31 @@ function MiniChart({ real }) {
         )
       })}
     </div>
+  )
+}
+
+// Green goblin (safer, lower line) or red demon (harder, higher line) flag.
+// Only rendered when real game data says the alternate line is worth it.
+function VariantChip({ variant }) {
+  const demon = variant.type === 'demon'
+  return (
+    <span
+      title={demon
+        ? `Demon line ${variant.line} still cleared in ${variant.pct}% of recent games — bigger payout`
+        : `Goblin line ${variant.line} cleared in ${variant.pct}% of recent games — safer play`}
+      style={{
+        display: 'inline-flex', alignItems: 'center', gap: '3px',
+        fontFamily: "'Barlow Condensed',sans-serif", fontSize: '9px', fontWeight: 700,
+        letterSpacing: '0.5px', textTransform: 'uppercase',
+        padding: '2px 6px', borderRadius: '7px', whiteSpace: 'nowrap',
+        background: demon ? 'rgba(239,68,68,0.16)' : 'rgba(21,214,143,0.16)',
+        color: demon ? '#ff6b6b' : '#15d68f',
+        border: `1px solid ${demon ? 'rgba(239,68,68,0.4)' : 'rgba(21,214,143,0.4)'}`,
+      }}
+    >
+      <span style={{ fontSize: '10px' }}>{demon ? '👹' : '👺'}</span>
+      {demon ? 'Demon' : 'Goblin'} {variant.line} · {variant.pct}%
+    </span>
   )
 }
 
@@ -181,20 +221,46 @@ export default function PickCard({ pick, delay = 0 }) {
     return () => { cancelled = true; clearTimeout(timer) }
   }, [pick.name, league, hasRealData])
 
-  const real = useMemo(() => {
+  // per-game stat values, computed once from the real game log
+  const gameVals = useMemo(() => {
     if (!gamelog || !gamelog.games || !gamelog.games.length) return null
-    const line = parseFloat(pick.val)
-    if (isNaN(line)) return null
-    const rows = []
-    for (const g of gamelog.games) {
-      const v = bdlStatValue(league, g, pick.stat)
+    const arr = []
+    for (const game of gamelog.games) {
+      const v = bdlStatValue(league, game, pick.stat)
       if (v === null || v === undefined || isNaN(v)) continue
-      rows.push({ date: g.date, value: v, cleared: up ? v > line : v < line })
+      arr.push({ date: game.date, value: v })
     }
-    if (!rows.length) return null
+    return arr.length ? arr : null
+  }, [gamelog, league, pick.stat])
+
+  // hit-rate of clearing any line in the pick's direction
+  function rateFor(lineRaw) {
+    if (!gameVals) return null
+    const L = parseFloat(lineRaw)
+    if (isNaN(L)) return null
+    const rows = gameVals.map(gv => ({ date: gv.date, value: gv.value, cleared: up ? gv.value > L : gv.value < L }))
     const cleared = rows.filter(r => r.cleared).length
-    return { rows, cleared, total: rows.length, line, pct: Math.round((cleared / rows.length) * 100) }
-  }, [gamelog, pick.val, pick.stat, league, up])
+    return { rows, cleared, total: rows.length, line: L, pct: Math.round((cleared / rows.length) * 100) }
+  }
+
+  const real = useMemo(() => rateFor(pick.val), [gameVals, pick.val, up])
+
+  // Flag the goblin (safer/lower) or demon (harder/higher) line, but only when
+  // the real data earns it: goblin near-automatic, or demon still live.
+  const GOBLIN_LOCK = 80, DEMON_LIVE = 50
+  const variant = useMemo(() => {
+    if (!real || !pick.altLines) return null
+    const dL = pick.altLines.demon, gL = pick.altLines.goblin
+    if (dL != null && dL !== real.line) {
+      const dr = rateFor(dL)
+      if (dr && dr.pct >= DEMON_LIVE) return { type: 'demon', line: dL, pct: dr.pct }
+    }
+    if (gL != null && gL !== real.line) {
+      const gr = rateFor(gL)
+      if (gr && gr.pct >= GOBLIN_LOCK) return { type: 'goblin', line: gL, pct: gr.pct }
+    }
+    return null
+  }, [real, pick.altLines, gameVals, up])
 
   const pctColor = real ? (real.pct >= 66 ? '#15d68f' : real.pct >= 40 ? '#f5c842' : '#ef4444') : '#7a8aaa'
 
@@ -398,7 +464,10 @@ export default function PickCard({ pick, delay = 0 }) {
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '10px' }}>
             <div>
               <div style={{ fontSize: '11px', color: '#7a8aaa' }}>{pick.stat}</div>
-              <div style={{ fontFamily: "'Barlow Condensed',sans-serif", fontSize: '17px', fontWeight: 700, color: '#eef2ff', lineHeight: 1 }}>{pick.val}</div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '7px', flexWrap: 'wrap' }}>
+                <div style={{ fontFamily: "'Barlow Condensed',sans-serif", fontSize: '17px', fontWeight: 700, color: '#eef2ff', lineHeight: 1 }}>{pick.val}</div>
+                {variant && <VariantChip variant={variant} />}
+              </div>
             </div>
             <div style={{
               width: '38px', height: '38px', borderRadius: '50%',
