@@ -1,603 +1,431 @@
-console.log('SERVER STARTING - node is running')
-import express from 'express'
-import cors from 'cors'
-import Stripe from 'stripe'
-import { createClient } from '@supabase/supabase-js'
+import React, { useEffect, useState } from 'react'
+import PickCard from './PickCard'
 
-const app = express()
-app.use(cors())
+const SERVER = 'https://trippredicts-production-cfad.up.railway.app'
 
-const API_KEY = process.env.VITE_ANTHROPIC_API_KEY
-const sleep = ms => new Promise(r => setTimeout(r, ms))
+const LEAGUE_ORDER = ['ALL', 'MLB', 'WNBA', 'NBA', 'NHL', 'NFL', 'CS2', 'LOL', 'VALORANT', 'COD', 'SOCCER', 'TENNIS', 'GOLF', 'MMA']
 
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY)
-const supabaseAdmin = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY)
+// Sports backed by real BALLDONTLIE game data. These tabs get the fiery treatment.
+const REAL_DATA_LEAGUES = ['MLB', 'WNBA']
 
-let ppCache = { data: null, ts: 0 }
-const CACHE_TTL = 5 * 60 * 1000
+const LEAGUE_COLORS = {
+  'ALL':      '#f5c842',
+  'NBA':      '#e17210',
+  'MLB':      '#4a90d9',
+  'NHL':      '#aab4cc',
+  'NFL':      '#4a90d9',
+  'WNBA':     '#ff6900',
+  'CS2':      '#00b4d8',
+  'LOL':      '#c89b3c',
+  'VALORANT': '#ff4655',
+  'COD':      '#00e676',
+  'SOCCER':   '#10b981',
+  'TENNIS':   '#f5c842',
+  'GOLF':     '#4a9e5c',
+  'MMA':      '#ef4444',
+}
 
-// Stripe webhook MUST come before express.json() — needs the raw body
-app.post('/stripe/webhook', express.raw({ type: 'application/json' }), async (req, res) => {
-  const sig = req.headers['stripe-signature']
-  let event
+const STEP_LABELS = [
+  ['CONNECTING', 'LIVE LINES', 'AI ANALYSIS', 'YOUR SLATE'],
+  ['STARTING UP', 'FETCHING PROPS', 'RUNNING MODELS', 'LOCKING PLAYS'],
+  ['GOING LIVE', 'LOADING BOARD', 'FINDING EDGES', 'BUILDING SLATE'],
+  ['FIRING UP', 'REAL-TIME DATA', 'MATCHUP CHECK', 'DROPPING PICKS'],
+  ['BOOTING', 'SCANNING LINES', 'WEIGHING FORM', 'FINALIZING'],
+]
+
+const FACTS = [
+  'Trip Predicts pulls live lines directly from PrizePicks every time you load.',
+  'MLB and WNBA picks now show real game-by-game hit rates from verified data.',
+  'Gold picks require 90% confidence or higher. Most sessions only have 1 or 2.',
+  'Every pick shows a bull case and a bear case so you know the risk upfront.',
+  'The AI never defaults to HIGHER. Direction is set by the data.',
+  'Trip Predicts covers NBA, MLB, NHL, NFL, CS2, LoL, Valorant and more.',
+  'Over 250 live props are scanned every single time you hit load.',
+  'Recent form is weighted more heavily than season averages for prop bets.',
+  'High usage players hit volume-based lines more consistently over time.',
+  'The confidence score runs from 50 to 95. Gold means 90 or above.',
+  'Lines are filtered to only show pre-game props starting within 36 hours.',
+  'Trip Predicts was built to give everyday bettors a real analytical edge.',
+  'A red flame tab means the numbers on those cards come from real game logs.',
+  'HIGHER or LOWER is never a guess. The model picks a direction based on stats.',
+  'Gold picks are rare. When they show up, they carry real conviction behind them.',
+  'Trip Predicts is free to use. No account needed. Just open and get your picks.',
+  'Bull case tells you why the pick hits. Bear case tells you why it might not.',
+  'A balanced slate beats a single-sport parlay almost every time.',
+  'The AI scans all available leagues simultaneously to find the best plays.',
+  'Each card has a TRIP PREDICTS watermark so your screenshots carry the brand.',
+]
+
+function shuffle(arr) {
+  const a = [...arr]
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]]
+  }
+  return a
+}
+
+async function fetchAllLines(server) {
   try {
-    event = stripe.webhooks.constructEvent(req.body, sig, process.env.STRIPE_WEBHOOK_SECRET)
-  } catch (err) {
-    console.error('Webhook signature failed:', err.message)
-    return res.status(400).send(`Webhook Error: ${err.message}`)
-  }
-
-  try {
-    if (event.type === 'checkout.session.completed') {
-      const session = event.data.object
-      const userId = session.client_reference_id
-      const customerId = session.customer
-      const subscriptionId = session.subscription
-      const sub = await stripe.subscriptions.retrieve(subscriptionId)
-      await supabaseAdmin.from('subscriptions').upsert({
-        user_id: userId,
-        stripe_customer_id: customerId,
-        stripe_subscription_id: subscriptionId,
-        status: sub.status,
-        current_period_end: new Date(sub.current_period_end * 1000).toISOString(),
-        updated_at: new Date().toISOString()
-      }, { onConflict: 'user_id' })
-      console.log('Subscription activated for user', userId)
-    }
-
-    if (event.type === 'customer.subscription.updated' || event.type === 'customer.subscription.deleted') {
-      const sub = event.data.object
-      await supabaseAdmin.from('subscriptions').update({
-        status: sub.status,
-        current_period_end: new Date(sub.current_period_end * 1000).toISOString(),
-        updated_at: new Date().toISOString()
-      }).eq('stripe_subscription_id', sub.id)
-      console.log('Subscription', sub.id, 'updated to', sub.status)
-    }
-  } catch (e) {
-    console.error('Webhook handler error:', e.message)
-  }
-
-  res.json({ received: true })
-})
-
-// JSON middleware comes AFTER the webhook
-app.use(express.json({ limit: '10mb' }))
-
-// ===== REAL STATS FROM BALLDONTLIE =====
-const BDL_KEY = process.env.BALLDONTLIE_KEY
-
-// path          = BDL league slug (note: Counter-Strike is "cs", not "cs2")
-// statsPath      = per-game stats endpoint. Differs per sport and was the WNBA 404:
-//                 MLB is /stats, WNBA is /player_stats.
-// needsGameDates = MLB stat rows carry no date and /mlb/v1/stats has no date,
-//                 sort, or season_type filter, so it mixes spring training in with
-//                 the regular season. We join real dates from /mlb/v1/games
-//                 (season_type=regular) to order by date and drop spring training.
-//                 WNBA rows already carry a real game.date, so no join needed.
-// kind           = which fetch strategy to use. ball sports (MLB/WNBA) have a
-//                 player-centric stats endpoint. LoL has player_match_map_stats
-//                 with a player_id filter (one call). CS2 has no player endpoint,
-//                 so we go player -> team -> recent matches -> per-match stats.
-//                 LoL and CS2 stat logs require the GOAT tier.
-const BDL_SPORTS = {
-  MLB:  { path: 'mlb',  statsPath: 'stats',        season: 2026, supported: true, needsGameDates: true,  kind: 'ball' },
-  WNBA: { path: 'wnba', statsPath: 'player_stats', season: 2026, supported: true, needsGameDates: false, kind: 'ball' },
-  LOL:  { path: 'lol',  supported: true, kind: 'lol' },
-  CS2:  { path: 'cs',   supported: true, kind: 'cs' },
-}
-
-const gamelogCache = {}
-const GAMELOG_TTL = 60 * 60 * 1000 // 1 hour
-
-async function bdlFetch(url) {
-  const r = await fetch(url, { headers: { Authorization: BDL_KEY } })
-  if (!r.ok) throw new Error(`BDL ${r.status}`)
-  return r.json()
-}
-
-// Recency key for WNBA, whose rows carry a nested game object with a real date.
-function gameSortKey(row) {
-  if (row.game && row.game.date) return new Date(row.game.date).getTime()
-  if (row.game && row.game.id) return Number(row.game.id) || 0
-  return 0
-}
-
-// Pull a usable date string off a WNBA row for the normalized `date` field.
-function rowDate(row) {
-  if (row.game && row.game.date) return row.game.date
-  return null
-}
-
-// Drop did-not-play rows so a DNP never counts as a miss in a hit-rate.
-function bdlPlayed(row, lg) {
-  if (lg === 'WNBA') return (Number(row.min) || 0) > 0
-  if (lg === 'MLB') {
-    const pa = Number(row.plate_appearances) || 0
-    const ab = Number(row.at_bats) || 0
-    const ip = Number(row.ip) || 0
-    return pa > 0 || ab > 0 || ip > 0
-  }
-  return true
-}
-
-// MLB / WNBA: player-centric stats endpoint. MLB needs the date join described
-// above; WNBA carries game.date already.
-async function ballGamelog(player, lg, sport) {
-  const searchTerm = player.trim().split(' ').slice(-1)[0]
-  const pData = await bdlFetch(`https://api.balldontlie.io/${sport.path}/v1/players?search=${encodeURIComponent(searchTerm)}`)
-  const players = pData.data || []
-  if (players.length === 0) return { player, league: lg, games: [], note: 'Player not found in stats database.' }
-
-  const lowerFull = player.trim().toLowerCase()
-  let match = players.find(p => `${p.first_name} ${p.last_name}`.toLowerCase() === lowerFull)
-  if (!match) match = players.find(p => (p.full_name || '').toLowerCase() === lowerFull)
-  if (!match) match = players[0]
-
-  let games = []
-  if (sport.needsGameDates) {
-    const teamId = match.team && match.team.id
-    if (teamId) {
-      const gData = await bdlFetch(`https://api.balldontlie.io/${sport.path}/v1/games?seasons[]=${sport.season}&team_ids[]=${teamId}&season_type=regular&per_page=100`)
-      const recent = (gData.data || [])
-        .filter(g => g.id && g.date)
-        .sort((a, b) => new Date(b.date) - new Date(a.date))
-        .slice(0, 25)
-      const dateMap = {}
-      const idParams = recent.map(g => { dateMap[g.id] = g.date; return `game_ids[]=${g.id}` }).join('&')
-      if (idParams) {
-        const sData = await bdlFetch(`https://api.balldontlie.io/${sport.path}/v1/${sport.statsPath}?player_ids[]=${match.id}&${idParams}&per_page=100`)
-        games = (sData.data || [])
-          .filter(g => bdlPlayed(g, lg))
-          .map(g => ({ ...g, date: dateMap[g.game_id] || null }))
-          .filter(g => g.date)
-          .sort((a, b) => new Date(b.date) - new Date(a.date))
-          .slice(0, 15)
+    const res = await fetch(`${server}/prizepicks/all`)
+    const data = await res.json()
+    if (!data.data || !data.included) return []
+    const players = {}
+    data.included.forEach(item => {
+      if (item.type === 'new_player') {
+        players[item.id] = {
+          name: item.attributes.display_name || item.attributes.name,
+          team: item.attributes.team,
+          league: item.attributes.league,
+          image: item.attributes.image_url
+        }
       }
-    }
-  } else {
-    const sData = await bdlFetch(`https://api.balldontlie.io/${sport.path}/v1/${sport.statsPath}?player_ids[]=${match.id}&seasons[]=${sport.season}&per_page=100`)
-    games = (sData.data || [])
-      .filter(g => bdlPlayed(g, lg))
-      .map(g => ({ ...g, date: rowDate(g) }))
-      .sort((a, b) => gameSortKey(b) - gameSortKey(a))
-      .slice(0, 15)
-  }
-  return {
-    player: `${match.first_name} ${match.last_name}`,
-    player_id: match.id,
-    league: lg,
-    games,
-    note: games.length ? `${games.length} recent games from BALLDONTLIE.` : 'No recent games found for this season.'
-  }
-}
-
-// LoL: one call. player_match_map_stats accepts a player_id filter and returns
-// per-map (per-game) rows directly. No date on the row, so we order by row id
-// (auto-increment) as a recency proxy. Each row is one map of one match.
-async function lolGamelog(player, lg) {
-  const term = player.trim()
-  const pData = await bdlFetch(`https://api.balldontlie.io/lol/v1/players?search=${encodeURIComponent(term)}`)
-  const players = pData.data || []
-  if (!players.length) return { player, league: lg, games: [], note: 'Player not found in LoL database.' }
-  const lower = term.toLowerCase()
-  const match = players.find(p => (p.nickname || '').toLowerCase() === lower) || players[0]
-
-  const sData = await bdlFetch(`https://api.balldontlie.io/lol/v1/player_match_map_stats?player_id=${match.id}&per_page=100`)
-  const games = (sData.data || [])
-    .map(g => ({
-      kills: g.kills, deaths: g.deaths, assists: g.assists,
-      creep_score: g.creep_score, gold_earned: g.gold_earned,
-      damage: g.total_damage_dealt_to_champions,
-      kill_participation: g.kill_participation,
-      wards_placed: g.wards_placed,
-      champion: g.champion && g.champion.name,
-      match_map_id: g.match_map_id,
-      _order: g.id || g.match_map_id || 0,
-      date: null
+    })
+    const now = new Date()
+    // Board is built from STANDARD lines only, kept exactly as PrizePicks sends
+    // them. Demon and goblin variants are set aside as alternates for the chip,
+    // never shown as the main line and never merged into the standard line.
+    const altMap = {} // "name|stat" -> { goblin, demon }
+    const standardRows = []
+    data.data.forEach(proj => {
+      const a = proj.attributes
+      const startTime = new Date(a.start_time)
+      const hoursUntil = (startTime - now) / (1000 * 60 * 60)
+      if (a.status !== 'pre_game') return
+      if (hoursUntil < 0 || hoursUntil > 36) return
+      const playerId = proj.relationships?.new_player?.data?.id
+      const player = players[playerId]
+      if (!player || !player.name) return
+      const oddsType = (a.odds_type || 'standard').toLowerCase()
+      const key = `${player.name}|${a.stat_display_name}`
+      const lineVal = Number(a.line_score)
+      if (isNaN(lineVal)) return
+      if (oddsType === 'demon' || oddsType === 'goblin') {
+        if (!altMap[key]) altMap[key] = {}
+        altMap[key][oddsType] = lineVal
+        return
+      }
+      standardRows.push({
+        name: player.name, team: player.team, league: player.league, image: player.image,
+        stat: a.stat_display_name, line: lineVal, key,
+        start_time: startTime.toLocaleTimeString('en-US', { timeZone: 'America/New_York', hour: 'numeric', minute: '2-digit', hour12: true }) + ' ET',
+        date: startTime.toLocaleDateString('en-US', { timeZone: 'America/New_York', weekday: 'short', month: 'short', day: 'numeric' })
+      })
+    })
+    const results = standardRows.map(r => ({
+      name: r.name, team: r.team, league: r.league, image: r.image,
+      stat: r.stat, line: r.line, oddsType: 'standard',
+      altLines: {
+        standard: r.line,
+        goblin: altMap[r.key] && altMap[r.key].goblin != null ? altMap[r.key].goblin : null,
+        demon: altMap[r.key] && altMap[r.key].demon != null ? altMap[r.key].demon : null
+      },
+      start_time: r.start_time, date: r.date
     }))
-    .sort((a, b) => (b._order || 0) - (a._order || 0))
-    .slice(0, 20)
-  return {
-    player: match.nickname,
-    player_id: match.id,
-    league: lg,
-    games,
-    note: games.length ? `${games.length} recent maps from BALLDONTLIE.` : 'No recent maps found.'
+    return results
+  } catch (e) {
+    console.log('Fetch error:', e.message)
+    return []
   }
 }
 
-// CS2: no player-centric endpoint. Find the player, get their team, list the
-// team's recent matches, then pull per-match player stats one match at a time.
-// These are match totals (summed across the maps played in that match).
-async function csGamelog(player, lg) {
-  const term = player.trim()
-  const pData = await bdlFetch(`https://api.balldontlie.io/cs/v1/players?search=${encodeURIComponent(term)}`)
-  const players = pData.data || []
-  if (!players.length) return { player, league: lg, games: [], note: 'Player not found in CS2 database.' }
-  const lower = term.toLowerCase()
-  const match = players.find(p => (p.nickname || '').toLowerCase() === lower) || players[0]
-  const teamId = match.team && match.team.id
-  if (!teamId) return { player: match.nickname, player_id: match.id, league: lg, games: [], note: 'No team on record for this player.' }
+export default function Tonight() {
+  const [allLines, setAllLines] = useState([])
+  const [availableLeagues, setAvailableLeagues] = useState([])
+  const [selectedLeague, setSelectedLeague] = useState('ALL')
+  const [picksCache, setPicksCache] = useState({})
+  const [loadingLeague, setLoadingLeague] = useState(null)
+  const [linesLoading, setLinesLoading] = useState(true)
+  const [goldFilter, setGoldFilter] = useState('all')
+  const [error, setError] = useState(null)
+  const [progress, setProgress] = useState(0)
+  const [stepIdx, setStepIdx] = useState(0)
+  const [stepLabels, setStepLabels] = useState(STEP_LABELS[0])
+  const [facts, setFacts] = useState(FACTS)
+  const [factIdx, setFactIdx] = useState(0)
+  const [factVisible, setFactVisible] = useState(true)
+  const [liveCount, setLiveCount] = useState(0)
 
-  const mData = await bdlFetch(`https://api.balldontlie.io/cs/v1/matches?team_ids[]=${teamId}&per_page=25`)
-  const matches = (mData.data || [])
-    .filter(m => m.id)
-    .sort((a, b) => new Date(b.start_time || 0) - new Date(a.start_time || 0))
-    .slice(0, 10) // bound the per-match fan-out
+  const now = new Date()
+  const hour = now.getHours()
+  const tomorrow = new Date(now.getTime() + 24 * 60 * 60 * 1000)
+  const isLate = hour >= 22
+  const displayDate = isLate
+    ? tomorrow.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })
+    : now.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })
+  const pageTitle = isLate ? "TOMORROW'S PICKS" : "TONIGHT'S PICKS"
+  const currentTime = now.toLocaleTimeString('en-US', { timeZone: 'America/New_York', hour: 'numeric', minute: '2-digit', hour12: true })
 
-  const games = []
-  for (const m of matches) {
+  useEffect(() => { initLines() }, [])
+
+  useEffect(() => {
+    const isLoading = linesLoading || !!loadingLeague
+    if (!isLoading) return
+    const interval = setInterval(() => {
+      setFactVisible(false)
+      setTimeout(() => { setFactIdx(i => (i + 1) % facts.length); setFactVisible(true) }, 300)
+    }, 3000)
+    return () => clearInterval(interval)
+  }, [linesLoading, loadingLeague, facts])
+
+  async function initLines() {
+    setLinesLoading(true)
+    setPicksCache({})
+    setFacts(shuffle(FACTS))
+    setStepLabels(STEP_LABELS[Math.floor(Math.random() * STEP_LABELS.length)])
+    setProgress(0); setStepIdx(0); setFactIdx(0); setFactVisible(true); setError(null)
+    await new Promise(r => setTimeout(r, 200))
+    setProgress(15); setStepIdx(1)
+    const lines = await fetchAllLines(SERVER)
+    setAllLines(lines)
+    setLiveCount(lines.length)
+    setProgress(35)
+    const leagueSet = new Set(lines.map(l => (l.league || '').toUpperCase()).filter(Boolean))
+    const ordered = LEAGUE_ORDER.filter(l => l === 'ALL' || leagueSet.has(l))
+    const others = [...leagueSet].filter(l => l && !LEAGUE_ORDER.includes(l))
+    setAvailableLeagues([...ordered, ...others])
+    setLinesLoading(false)
+    if (lines.length === 0) { setError('No live props on PrizePicks right now. Check back soon.'); return }
+    await loadPicksForLeague('ALL', lines)
+  }
+
+  async function loadPicksForLeague(league, lines) {
+    const lns = lines || allLines
+    if (!lns || lns.length === 0) return
+    setStepLabels(STEP_LABELS[Math.floor(Math.random() * STEP_LABELS.length)])
+    setLoadingLeague(league); setProgress(40); setStepIdx(2); setError(null)
     try {
-      const sData = await bdlFetch(`https://api.balldontlie.io/cs/v1/player_match_stats?match_id=${m.id}`)
-      const row = (sData.data || []).find(r => r.player && r.player.id === match.id)
-      if (row) {
-        games.push({
-          kills: row.kills, deaths: row.deaths, assists: row.assists,
-          adr: row.adr, kast: row.kast, rating: row.rating,
-          headshot_percentage: row.headshot_percentage,
-          first_kills: row.first_kills, first_deaths: row.first_deaths,
-          match_id: m.id,
-          date: m.start_time || null
-        })
-      }
-    } catch (e) { /* skip a match that has no stats yet */ }
-  }
-  games.sort((a, b) => new Date(b.date || 0) - new Date(a.date || 0))
-  return {
-    player: match.nickname,
-    player_id: match.id,
-    league: lg,
-    games,
-    note: games.length ? `${games.length} recent matches from BALLDONTLIE (match totals).` : 'No recent matches found.'
-  }
-}
-
-app.post('/player-gamelog', async (req, res) => {
-  try {
-    const { player, league } = req.body
-    if (!player) throw new Error('No player provided')
-    const lg = (league || '').toUpperCase()
-    const sport = BDL_SPORTS[lg]
-    if (!sport) return res.json({ player, league: lg, games: [], note: `${lg} stats not available yet.` })
-    if (!sport.supported) return res.json({ player, league: lg, games: [], supported: false, note: sport.reason })
-
-    const cacheKey = `${lg}|${player.trim().toLowerCase()}`
-    const cached = gamelogCache[cacheKey]
-    if (cached && Date.now() - cached.ts < GAMELOG_TTL) return res.json(cached.data)
-
-    let payload
-    if (sport.kind === 'lol') payload = await lolGamelog(player, lg)
-    else if (sport.kind === 'cs') payload = await csGamelog(player, lg)
-    else payload = await ballGamelog(player, lg, sport)
-
-    gamelogCache[cacheKey] = { data: payload, ts: Date.now() }
-    res.json(payload)
-  } catch (e) {
-    console.error('Gamelog error:', e.message)
-    res.status(500).json({ error: e.message })
-  }
-})
-
-function sortLines(rawLines, league) {
-  if (!rawLines) return []
-  const PRIORITY = { 'NBA': 1, 'MLB': 2, 'NHL': 3, 'NFL': 4, 'CS2': 5, 'LOL': 5, 'VALORANT': 5, 'COD': 5 }
-  if (league) {
-    return rawLines.filter(l => (l.league || '').toUpperCase() === league.toUpperCase()).slice(0, 100)
-  }
-  const groups = {}
-  rawLines.forEach(l => {
-    const lg = (l.league || 'OTHER').toUpperCase()
-    if (!groups[lg]) groups[lg] = []
-    groups[lg].push(l)
-  })
-  const sorted = Object.entries(groups).sort(([a], [b]) => (PRIORITY[a] || 99) - (PRIORITY[b] || 99))
-  const result = []
-  const perSport = Math.max(5, Math.floor(80 / sorted.length))
-  sorted.forEach(([, lines]) => result.push(...lines.slice(0, perSport)))
-  return result.slice(0, 100)
-}
-
-function normalizePicks(raw) {
-  return raw.map((p, i) => ({
-    id: p.id || i + 1,
-    name: p.name || 'Unknown Player',
-    meta: p.meta || `${p.sport || ''} · ${p.team || ''}`,
-    stat: p.stat || 'Points',
-    val: String(p.val || p.line || '0'),
-    dir: (() => {
-      const d = (p.dir || 'HIGHER').toUpperCase()
-      if (d.includes('MORE') || d.includes('OVER') || d.includes('HIGHER')) return 'HIGHER'
-      if (d.includes('LESS') || d.includes('UNDER') || d.includes('LOWER')) return 'LOWER'
-      return 'HIGHER'
-    })(),
-    conf: Number(p.conf || p.confidence || 75),
-    sport: p.sport || 'Sport',
-    league: p.league || p.sport || 'Sport',
-    initials: p.initials || (p.name || 'XX').split(' ').map(w => w[0]).join('').substring(0, 2).toUpperCase(),
-    bull: p.bull || 'Strong pick based on current form.',
-    bear: p.bear || 'Variance possible.',
-    record: p.record || null,
-    cats: p.cats || [{ n: p.stat || 'Points', p: Number(p.conf || 75) }],
-    time: p.time || null,
-    date: p.date || null
-  }))
-}
-
-function dedupe(picks) {
-  const seen = new Set()
-  return picks.filter(p => {
-    const key = p.name.toLowerCase()
-    if (seen.has(key)) return false
-    seen.add(key)
-    return true
-  })
-}
-
-function validateLines(picks, rawLines) {
-  if (!rawLines || rawLines.length === 0) return picks
-  return picks.map(p => {
-    const nameMatches = rawLines.filter(l => l.name.toLowerCase() === p.name.toLowerCase())
-    let match = null
-    if (nameMatches.length) {
-      const statMatches = nameMatches.filter(l => l.stat.toLowerCase() === p.stat.toLowerCase())
-      const pool = statMatches.length ? statMatches : nameMatches
-      const target = parseFloat(p.val)
-      if (!isNaN(target) && pool.length > 1) {
-        // pin to the real board line closest to the value the AI returned, so a
-        // shared stat name (or partial-game line) can never show the wrong number
-        match = pool.reduce((best, l) =>
-          Math.abs(Number(l.line) - target) < Math.abs(Number(best.line) - target) ? l : best)
-      } else {
-        match = pool[0]
-      }
-    }
-    if (match) {
-      p.val = String(match.line)
-      p.stat = match.stat
-      p.league = match.league || p.league
-      p.team = match.team || p.team
-      if (match.start_time) p.time = match.start_time
-      if (match.date) p.date = match.date
-      if (match.oddsType) p.oddsType = match.oddsType
-      if (match.altLines) p.altLines = match.altLines
-    }
-    return p
-  })
-}
-
-app.get('/prizepicks/all', async (req, res) => {
-  try {
-    const now = Date.now()
-    if (ppCache.data && now - ppCache.ts < CACHE_TTL) {
-      console.log('Serving PrizePicks from cache')
-      return res.json(ppCache.data)
-    }
-    const target = encodeURIComponent(`https://api.prizepicks.com/projections?per_page=250&single_stat=true`)
-    const response = await fetch(`https://api.scraperapi.com?api_key=${process.env.SCRAPER_API_KEY}&url=${target}&ultra_premium=true`)
-    const data = await response.json()
-    ppCache = { data, ts: now }
-    res.json(data)
-  } catch (e) {
-    if (ppCache.data) return res.json(ppCache.data)
-    res.status(500).json({ error: e.message })
-  }
-})
-
-app.get('/prizepicks/:leagueId', async (req, res) => {
-  try {
-    const { leagueId } = req.params
-    const target = encodeURIComponent(`https://api.prizepicks.com/projections?league_id=${leagueId}&per_page=50&single_stat=true`)
-    const response = await fetch(`https://api.scraperapi.com?api_key=${process.env.SCRAPER_API_KEY}&url=${target}&ultra_premium=true`)
-    const data = await response.json()
-    res.json(data)
-  } catch (e) {
-    res.status(500).json({ error: e.message })
-  }
-})
-
-app.post('/stripe/create-checkout', async (req, res) => {
-  try {
-    const { userId, email } = req.body
-    if (!userId || !email) throw new Error('Missing user info')
-
-    const session = await stripe.checkout.sessions.create({
-      mode: 'subscription',
-      payment_method_types: ['card'],
-      line_items: [{ price: process.env.STRIPE_PRICE_ID, quantity: 1 }],
-      client_reference_id: userId,
-      customer_email: email,
-      success_url: 'https://trip-predicts.vercel.app?sub=success',
-      cancel_url: 'https://trip-predicts.vercel.app?sub=cancel'
-    })
-
-    res.json({ url: session.url })
-  } catch (e) {
-    console.error('Checkout error:', e.message)
-    res.status(500).json({ error: e.message })
-  }
-})
-
-app.post('/picks', async (req, res) => {
-  try {
-    const { currentTime, lines: rawLines, league, count = 6 } = req.body
-    const lines = sortLines(rawLines, league)
-    const pickCount = Math.min(count, 10, lines.length)
-    console.log('Analyzing', lines?.length, 'lines for league:', league || 'ALL')
-    if (!lines || lines.length === 0) throw new Error('No lines provided')
-
-    const linesText = lines.map(l =>
-      `${l.name} (${l.league} · ${l.team}) | ${l.stat}: ${l.line} | ${l.date} ${l.start_time}`
-    ).join('\n')
-
-    const spreadRule = league
-      ? `All picks must be from ${league}. Select the best ${pickCount} picks from the lines above.`
-      : `Select the best ${pickCount} picks. Spread across AT LEAST 3 different sports or leagues. Max 2 picks from the same league. Prioritize NBA, MLB, NHL, NFL, esports over WNBA or niche sports.`
-
-    const response = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-api-key': API_KEY, 'anthropic-version': '2023-06-01' },
-      body: JSON.stringify({
-        model: 'claude-sonnet-4-6',
-        max_tokens: 4000,
-        system: `You are a PrizePicks prop analyst. Output ONLY a valid JSON array. No text before or after. Start with [ end with ].`,
-        messages: [{
-          role: 'user',
-          content: `Current time: ${currentTime} ET
-
-These are REAL live PrizePicks lines. Use ONLY these exact player names and exact line numbers — copy the number after the colon exactly, do not change it:
-
-${linesText}
-
-${spreadRule}
-
-For each pick, determine direction (HIGHER or LOWER) based on concrete statistical evidence. Once you decide a direction, commit to it.
-
-Output ONLY this JSON array:
-[{"id":1,"name":"exact player name","meta":"League · Team","stat":"exact stat","val":"exact line number","dir":"HIGHER","conf":88,"sport":"NBA","league":"NBA","initials":"PN","time":"exact time","date":"exact date","bull":"specific reason","bear":"real risk","record":"12 of last 15 games cleared this line","cats":[{"n":"stat","p":88}]}]
-
-Rules:
-- Copy the line number EXACTLY — never change it
-- dir must be HIGHER or LOWER based on clear statistical evidence
-- conf is 50-95
-- record: short specific statement like "11 of last 14 games hit this line"
-- Vary stat categories. Do not lean only on points and rebounds. Mix in props like 3-pointers made, shot attempts, steals, blocks, turnovers, total bases, strikeouts and others when the lines and form support them
-- NEVER pick the same player more than once
-- Give exactly ${pickCount} picks`
-        }]
-      })
-    })
-
-    const data = await response.json()
-    if (!data.content) throw new Error(data.error?.message || 'No content')
-    const textBlock = data.content.find(b => b.type === 'text')
-    if (!textBlock) throw new Error('No response')
-
-    const start = textBlock.text.indexOf('[')
-    const end = textBlock.text.lastIndexOf(']')
-    if (start === -1 || end === -1) throw new Error('Please retry in a moment.')
-
-    const picks = validateLines(dedupe(normalizePicks(JSON.parse(textBlock.text.slice(start, end + 1)))), rawLines)
-    console.log('Got', picks.length, 'picks')
-    res.json({ picks })
-  } catch (e) {
-    console.error('Picks error:', e.message)
-    res.status(500).json({ error: e.message })
-  }
-})
-
-app.post('/gold', async (req, res) => {
-  try {
-    const { currentTime, lines: rawLines, league } = req.body
-    const lines = sortLines(rawLines, league)
-    console.log('Finding gold from', lines?.length, 'lines for league:', league || 'ALL')
-    if (!lines || lines.length === 0) throw new Error('No lines provided')
-
-    const linesText = lines.map(l =>
-      `${l.name} (${l.league} · ${l.team}) | ${l.stat}: ${l.line} | ${l.date} ${l.start_time}`
-    ).join('\n')
-
-    const spreadRule = league
-      ? `All picks must be from ${league}.`
-      : `Prioritize NBA, MLB, NHL, NFL, esports. Spread across AT LEAST 2 different leagues. Max 2 picks per league.`
-
-    const response = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-api-key': API_KEY, 'anthropic-version': '2023-06-01' },
-      body: JSON.stringify({
-        model: 'claude-sonnet-4-6',
-        max_tokens: 4000,
-        system: `You are a PrizePicks prop analyst. Output ONLY a valid JSON array. No text before or after. Start with [ end with ].`,
-        messages: [{
-          role: 'user',
-          content: `Current time: ${currentTime} ET
-
-These are REAL live PrizePicks lines. Find the highest confidence picks at 90%+ confidence only. Copy line numbers exactly — never change them:
-
-${spreadRule}
-
-${linesText}
-
-Find your top 4-6 picks where you are genuinely 90%+ confident based on recent player performance and matchup. You MUST return at least 3 picks — never return an empty array. Only assign 90%+ confidence when genuinely warranted by recent stats and form.
-
-Output ONLY this JSON array:
-[{"id":1,"name":"exact player name","meta":"League · Team","stat":"exact stat","val":"exact line number","dir":"HIGHER","conf":92,"sport":"NBA","league":"NBA","initials":"PN","time":"exact time","date":"exact date","bull":"specific reason why this hits","bear":"real risk factor","record":"Hit this line in 12 of his last 15 games","cats":[{"n":"stat name","p":92}]}]
-
-Rules:
-- Copy line numbers EXACTLY — never change them
-- conf must be 90 or above — never assign below 90 on this endpoint
-- dir is HIGHER or LOWER based on real statistical evidence — never guess
-- record: MUST be specific like "Hit in 11 of last 14 games" or "Averaged well above this line over last 10 games"
-- Vary stat categories when the data supports it. Do not lean only on points and rebounds. Mix in 3-pointers made, shot attempts, steals, blocks, turnovers, total bases, strikeouts and other categories
-- NEVER pick the same player twice
-- Always return at least 3 picks`
-        }]
-      })
-    })
-
-    const data = await response.json()
-    if (!data.content) throw new Error(data.error?.message || 'No content')
-    const textBlock = data.content?.find(b => b.type === 'text')
-    if (!textBlock) throw new Error('No response from AI')
-
-    const start = textBlock.text.indexOf('[')
-    const end = textBlock.text.lastIndexOf(']')
-    if (start === -1 || end === -1) return res.json({ picks: [] })
-
-    const parsed = JSON.parse(textBlock.text.slice(start, end + 1))
-    const picks = validateLines(dedupe(normalizePicks(parsed)), rawLines).filter(p => p.conf >= 90)
-    console.log('Got', picks.length, 'gold picks')
-    res.json({ picks })
-  } catch (e) {
-    console.error('Gold error:', e.message)
-    res.status(500).json({ error: e.message })
-  }
-})
-
-app.post('/chat', async (req, res) => {
-  try {
-    const { messages, currentTime, lines } = req.body
-    const linesText = lines ? lines.slice(0, 30).map(l => `${l.name} (${l.league} · ${l.team}) | ${l.stat}: ${l.line} | ${l.start_time}`).join('\n') : ''
-    const lastMsg = messages[messages.length - 1]?.content || ''
-    let current = [...messages]
-    current[current.length - 1] = {
-      role: 'user',
-      content: `Current time: ${currentTime} ET\n\n${lastMsg}\n\nLive PrizePicks lines right now:\n${linesText}`
-    }
-
-    for (let i = 0; i < 10; i++) {
-      if (i > 0) await sleep(3000)
-      const res2 = await fetch('https://api.anthropic.com/v1/messages', {
+      const res = await fetch(`${SERVER}/picks`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-api-key': API_KEY, 'anthropic-version': '2023-06-01' },
-        body: JSON.stringify({
-          model: 'claude-sonnet-4-6',
-          max_tokens: 4000,
-          tools: [{ type: 'web_search_20250305', name: 'web_search' }],
-          system: `You are the Trip Predicts AI analyst for PrizePicks. You have real live prop lines provided to you. Always use the exact line numbers from the data — never change them. Prioritize NBA, MLB, NHL, NFL, and esports. Only recommend WNBA or niche sports if explicitly asked. Look for clear statistical edges — recent form, matchup advantages, usage rates, pace of play. Only recommend picks from games in the next 36 hours. Never recommend the same player twice. Spread picks across multiple sports — never more than 2 from the same league. When recommending direction, commit to it based on data. Tiers: Regular below 75%, High 75-89%, GOLD 90%+. Never use em dashes. Bold key info with **text**.`,
-          messages: current
-        })
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ currentTime, lines: lns, league: league === 'ALL' ? null : league, count: 10 })
       })
-      const data = await res2.json()
-      if (!data.content) throw new Error('No content')
-      if (data.stop_reason === 'tool_use') {
-        current = [...current, { role: 'assistant', content: data.content }]
-        const toolResults = data.content.filter(b => b.type === 'tool_use').map(t => ({ type: 'tool_result', tool_use_id: t.id, content: `Search done for: ${t.input?.query}` }))
-        current = [...current, { role: 'user', content: toolResults }]
-        continue
-      }
-      if (data.stop_reason === 'end_turn') {
-        const textBlock = data.content.find(b => b.type === 'text')
-        if (textBlock) { res.json({ reply: textBlock.text }); return }
-      }
-      throw new Error('Unexpected stop')
+      setProgress(88); setStepIdx(3)
+      const data = await res.json()
+      if (!data.picks) throw new Error(data.error || 'No picks returned')
+      const imageMap = {}
+      lns.forEach(l => { if (l.image) imageMap[l.name] = l.image })
+      data.picks.forEach(p => { if (!p.image && imageMap[p.name]) p.image = imageMap[p.name] })
+      setProgress(100)
+      await new Promise(r => setTimeout(r, 300))
+      setPicksCache(prev => ({ ...prev, [league]: data.picks }))
+    } catch (e) {
+      setError(e.message || 'Could not load picks.')
+      setPicksCache(prev => ({ ...prev, [league]: [] }))
     }
-    throw new Error('Too many turns')
-  } catch (e) {
-    console.error('Chat error:', e.message)
-    res.status(500).json({ error: e.message })
+    setLoadingLeague(null)
   }
-})
 
-const PORT = process.env.PORT || 8080
-app.listen(PORT, () => console.log(`Trip Predicts server running on port ${PORT}`))
+  async function handleTabSelect(league) {
+    if (loadingLeague) return
+    setSelectedLeague(league)
+    setGoldFilter('all')
+    if (picksCache[league] === undefined) await loadPicksForLeague(league)
+  }
+
+  function handleRefresh() {
+    setSelectedLeague('ALL')
+    setGoldFilter('all')
+    initLines()
+  }
+
+  const isLoading = linesLoading || loadingLeague === selectedLeague
+  const currentPicks = picksCache[selectedLeague] || []
+  const goldPicks = currentPicks.filter(p => p.conf >= 90)
+  const highPicks = currentPicks.filter(p => p.conf >= 75 && p.conf < 90)
+  const regularPicks = currentPicks.filter(p => p.conf < 75)
+  const displayPicks = goldFilter === 'gold' ? goldPicks : currentPicks
+
+  return (
+    <div style={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+      <div style={{ padding: '18px 20px 0', display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', flexShrink: 0 }}>
+        <div>
+          <div style={{ fontFamily: 'var(--font-d)', fontSize: '28px', letterSpacing: '2px', color: 'var(--text)', lineHeight: 1 }}>{pageTitle}</div>
+          <div style={{ fontSize: '11px', color: 'var(--text2)', marginTop: '3px' }}>{displayDate}{liveCount > 0 ? ` · ${liveCount} live props` : ''}</div>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          {!isLoading && <button onClick={handleRefresh} style={{ background: 'none', border: '1px solid var(--border2)', color: 'var(--text2)', fontFamily: 'var(--font)', fontSize: '11px', padding: '5px 12px', borderRadius: '20px', cursor: 'pointer', letterSpacing: '1px' }}>Refresh</button>}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '6px', background: 'rgba(16,185,129,0.1)', border: '1px solid rgba(16,185,129,0.25)', color: 'var(--high)', fontSize: '11px', fontWeight: 600, letterSpacing: '1.5px', textTransform: 'uppercase', padding: '5px 10px', borderRadius: '20px' }}>
+            <div style={{ width: '6px', height: '6px', borderRadius: '50%', background: 'var(--high)', animation: 'pulse 1.5s infinite' }} />LIVE
+          </div>
+        </div>
+      </div>
+
+      {availableLeagues.length > 0 && (
+        <div style={{ padding: '14px 20px 0', flexShrink: 0 }}>
+          <div style={{ overflowX: 'auto', paddingBottom: '6px' }}>
+            <div style={{ display: 'flex', gap: '8px', minWidth: 'max-content' }}>
+              {availableLeagues.map(league => {
+                const isActive = selectedLeague === league
+                const isThisLoading = loadingLeague === league
+                const color = LEAGUE_COLORS[league] || '#7a8aaa'
+                const cached = picksCache[league] || []
+                const hasGold = cached.some(p => p.conf >= 90)
+                const isReal = REAL_DATA_LEAGUES.includes(league)
+                const realStyle = isReal ? {
+                  border: `1px solid ${isActive ? '#ff7a1a' : 'rgba(255,95,25,0.55)'}`,
+                  background: isActive
+                    ? 'linear-gradient(115deg, #a82200, #ff6200, #ffa432, #ff5400, #a82200)'
+                    : 'linear-gradient(115deg, rgba(255,70,0,0.22), rgba(255,140,0,0.12), rgba(38,16,8,0.55), rgba(255,70,0,0.22))',
+                  backgroundSize: '300% 100%',
+                  color: isActive ? '#fff' : '#ffae73',
+                  fontWeight: 800,
+                  textShadow: isActive ? '0 0 9px rgba(255,150,0,0.75)' : 'none',
+                  animation: 'realFlow 3s linear infinite, realDataGlow 2.2s ease-in-out infinite',
+                } : {}
+                return (
+                  <button key={league} onClick={() => handleTabSelect(league)} disabled={!!loadingLeague} style={{
+                    background: isActive ? `${color}22` : 'var(--bg3)',
+                    border: `1px solid ${isActive ? color : 'var(--border)'}`,
+                    color: isActive ? color : 'var(--text2)',
+                    fontFamily: 'var(--font-c)', fontSize: '12px', fontWeight: 700, letterSpacing: '1px',
+                    padding: '8px 14px', borderRadius: '20px',
+                    cursor: loadingLeague ? 'not-allowed' : 'pointer', transition: 'all 0.2s',
+                    display: 'flex', alignItems: 'center', gap: '5px', whiteSpace: 'nowrap',
+                    opacity: loadingLeague && !isActive ? 0.5 : 1,
+                    WebkitTapHighlightColor: 'transparent',
+                    ...realStyle
+                  }}>
+                    {isReal
+                      ? <span style={{ fontSize: '11px', display: 'inline-block', animation: 'flameFlick 0.85s ease-in-out infinite' }}>🔥</span>
+                      : (hasGold && <span style={{ fontSize: '9px', color: '#f5c842' }}>★</span>)}
+                    {league}
+                    {isThisLoading && <span style={{ fontSize: '10px', animation: 'spin 1s linear infinite', display: 'inline-block' }}>⟳</span>}
+                    {cached.length > 0 && !isThisLoading && <span style={{ background: isActive ? color : 'var(--border2)', color: isActive ? '#000' : 'var(--text3)', fontSize: '10px', fontWeight: 700, padding: '1px 6px', borderRadius: '10px' }}>{cached.length}</span>}
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {!isLoading && currentPicks.length > 0 && (
+        <div style={{ padding: '12px 20px 0', display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 }}>
+          <button onClick={() => setGoldFilter('all')} style={{ background: goldFilter === 'all' ? 'rgba(255,255,255,0.08)' : 'none', border: `1px solid ${goldFilter === 'all' ? 'rgba(255,255,255,0.2)' : 'var(--border)'}`, color: goldFilter === 'all' ? 'var(--text)' : 'var(--text3)', fontFamily: 'var(--font-c)', fontSize: '12px', fontWeight: 700, letterSpacing: '1px', padding: '6px 14px', borderRadius: '20px', cursor: 'pointer', transition: 'all 0.2s', display: 'flex', alignItems: 'center', gap: '6px' }}>
+            ALL PICKS <span style={{ background: 'var(--border2)', color: 'var(--text3)', fontSize: '10px', padding: '1px 6px', borderRadius: '10px' }}>{currentPicks.length}</span>
+          </button>
+          {goldPicks.length > 0 && (
+            <button onClick={() => setGoldFilter('gold')} style={{ background: goldFilter === 'gold' ? 'rgba(245,200,66,0.12)' : 'none', border: `1px solid ${goldFilter === 'gold' ? '#f5c842' : 'var(--border)'}`, color: goldFilter === 'gold' ? '#f5c842' : 'var(--text3)', fontFamily: 'var(--font-c)', fontSize: '12px', fontWeight: 700, letterSpacing: '1px', padding: '6px 14px', borderRadius: '20px', cursor: 'pointer', transition: 'all 0.2s', display: 'flex', alignItems: 'center', gap: '6px' }}>
+              <span style={{ fontSize: '10px' }}>★</span> GOLD <span style={{ background: goldFilter === 'gold' ? 'rgba(245,200,66,0.25)' : 'var(--border2)', color: goldFilter === 'gold' ? '#f5c842' : 'var(--text3)', fontSize: '10px', padding: '1px 6px', borderRadius: '10px' }}>{goldPicks.length}</span>
+            </button>
+          )}
+          {highPicks.length > 0 && <div style={{ fontSize: '11px', color: 'var(--text3)', marginLeft: 'auto' }}>{highPicks.length} high · {regularPicks.length} regular</div>}
+        </div>
+      )}
+
+      {isLoading && (
+        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '40px 24px', gap: '28px' }}>
+          <div style={{ display: 'flex', alignItems: 'center' }}>
+            {[0, 1, 2, 3].map(i => (
+              <React.Fragment key={i}>
+                <div style={{ width: '32px', height: '32px', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', background: stepIdx > i ? 'var(--gold)' : stepIdx === i ? 'rgba(245,200,66,0.15)' : 'var(--bg3)', border: stepIdx === i ? '2px solid var(--gold)' : stepIdx > i ? 'none' : '1px solid var(--border2)', transition: 'all 0.4s ease', fontSize: '12px', fontWeight: 700, color: stepIdx > i ? '#1a0f00' : stepIdx === i ? 'var(--gold)' : 'var(--text3)', fontFamily: 'var(--font-c)' }}>
+                  {stepIdx > i ? '✓' : i + 1}
+                </div>
+                {i < 3 && <div style={{ width: '44px', height: '2px', background: stepIdx > i ? 'var(--gold)' : 'var(--border)', transition: 'background 0.6s ease' }} />}
+              </React.Fragment>
+            ))}
+          </div>
+          <div style={{ width: '100%', maxWidth: '340px' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+              <div style={{ fontFamily: 'var(--font-d)', fontSize: '18px', letterSpacing: '2px', color: 'var(--gold)' }}>{stepLabels[stepIdx] || stepLabels[0]}</div>
+              <div style={{ fontFamily: 'var(--font-c)', fontSize: '16px', fontWeight: 700, color: 'var(--text2)' }}>{progress}%</div>
+            </div>
+            <div style={{ height: '6px', background: 'var(--bg3)', borderRadius: '3px', overflow: 'hidden', border: '1px solid var(--border)' }}>
+              <div style={{ height: '100%', background: 'linear-gradient(90deg,#d4a017,#f5c842,#fff0a0)', borderRadius: '3px', width: `${progress}%`, transition: 'width 0.9s cubic-bezier(0.16,1,0.3,1)' }} />
+            </div>
+            <div style={{ fontSize: '13px', color: 'var(--text2)', marginTop: '18px', lineHeight: 1.7, textAlign: 'center', minHeight: '44px', opacity: factVisible ? 1 : 0, transition: 'opacity 0.3s ease' }}>{facts[factIdx]}</div>
+          </div>
+        </div>
+      )}
+
+      {error && !isLoading && (
+        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '40px', textAlign: 'center' }}>
+          <div style={{ fontSize: '14px', color: 'var(--text2)', marginBottom: '16px', lineHeight: 1.6 }}>{error}</div>
+          <button onClick={handleRefresh} style={{ background: 'var(--accent2)', border: 'none', color: '#fff', fontFamily: 'var(--font)', fontSize: '13px', padding: '10px 24px', borderRadius: '10px', cursor: 'pointer' }}>Retry</button>
+        </div>
+      )}
+
+      {!isLoading && !error && displayPicks.length > 0 && (
+        <div style={{ flex: 1, overflowY: 'auto', padding: '14px 20px 24px' }}>
+          {goldFilter === 'all' && goldPicks.length > 0 && (
+            <div style={{ marginBottom: '20px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '12px' }}>
+                <span style={{ fontFamily: 'var(--font-d)', fontSize: '16px', letterSpacing: '2px', color: '#f5c842' }}>★ GOLD</span>
+                <div style={{ flex: 1, height: '1px', background: 'rgba(245,200,66,0.2)' }} />
+                <span style={{ fontSize: '11px', color: 'var(--text3)' }}>90%+</span>
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(170px, 1fr))', gap: '14px' }}>
+                {goldPicks.map((p, i) => <PickCard key={p.id} pick={p} delay={i * 60} />)}
+              </div>
+            </div>
+          )}
+          {goldFilter === 'all' && highPicks.length > 0 && (
+            <div style={{ marginBottom: '20px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '12px' }}>
+                <span style={{ fontFamily: 'var(--font-d)', fontSize: '16px', letterSpacing: '2px', color: '#10b981' }}>HIGH</span>
+                <div style={{ flex: 1, height: '1px', background: 'rgba(16,185,129,0.2)' }} />
+                <span style={{ fontSize: '11px', color: 'var(--text3)' }}>75-89%</span>
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(170px, 1fr))', gap: '14px' }}>
+                {highPicks.map((p, i) => <PickCard key={p.id} pick={p} delay={i * 60} />)}
+              </div>
+            </div>
+          )}
+          {goldFilter === 'all' && regularPicks.length > 0 && (
+            <div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '12px' }}>
+                <span style={{ fontFamily: 'var(--font-d)', fontSize: '16px', letterSpacing: '2px', color: 'var(--text2)' }}>PICKS</span>
+                <div style={{ flex: 1, height: '1px', background: 'var(--border)' }} />
+                <span style={{ fontSize: '11px', color: 'var(--text3)' }}>Below 75%</span>
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(170px, 1fr))', gap: '14px' }}>
+                {regularPicks.map((p, i) => <PickCard key={p.id} pick={p} delay={i * 60} />)}
+              </div>
+            </div>
+          )}
+          {goldFilter === 'gold' && (
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(170px, 1fr))', gap: '14px' }}>
+              {goldPicks.map((p, i) => <PickCard key={p.id} pick={p} delay={i * 60} />)}
+            </div>
+          )}
+        </div>
+      )}
+
+      {!isLoading && !error && goldFilter === 'gold' && goldPicks.length === 0 && currentPicks.length > 0 && (
+        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '40px', textAlign: 'center' }}>
+          <div style={{ fontFamily: 'var(--font-d)', fontSize: '20px', letterSpacing: '2px', color: 'var(--text2)', marginBottom: '8px' }}>NO GOLD PICKS</div>
+          <div style={{ fontSize: '13px', color: 'var(--text3)', marginBottom: '20px' }}>No 90%+ confidence picks for {selectedLeague} right now.</div>
+          <button onClick={() => setGoldFilter('all')} style={{ background: 'none', border: '1px solid var(--border2)', color: 'var(--text2)', fontFamily: 'var(--font)', fontSize: '13px', padding: '8px 20px', borderRadius: '10px', cursor: 'pointer' }}>View All Picks</button>
+        </div>
+      )}
+
+      {!isLoading && !error && currentPicks.length === 0 && availableLeagues.length > 0 && (
+        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '40px', textAlign: 'center' }}>
+          <div style={{ fontFamily: 'var(--font-d)', fontSize: '20px', letterSpacing: '2px', color: 'var(--text2)', marginBottom: '8px' }}>NO {selectedLeague} PICKS</div>
+          <div style={{ fontSize: '13px', color: 'var(--text3)', marginBottom: '20px' }}>Try another sport or hit refresh.</div>
+          <button onClick={() => handleTabSelect('ALL')} style={{ background: 'none', border: '1px solid var(--border2)', color: 'var(--text2)', fontFamily: 'var(--font)', fontSize: '13px', padding: '8px 20px', borderRadius: '10px', cursor: 'pointer' }}>View All Sports</button>
+        </div>
+      )}
+
+      <style>{`
+        @keyframes pulse{0%,100%{opacity:1;}50%{opacity:0.3;}}
+        @keyframes spin{from{transform:rotate(0deg);}to{transform:rotate(360deg);}}
+        @keyframes realDataGlow{
+          0%,100%{box-shadow:0 0 8px rgba(255,60,0,0.35), 0 0 18px rgba(255,110,0,0.18), inset 0 0 8px rgba(255,90,0,0.15);}
+          50%{box-shadow:0 0 16px rgba(255,80,0,0.6), 0 0 34px rgba(255,140,0,0.32), inset 0 0 12px rgba(255,110,0,0.25);}
+        }
+        @keyframes realFlow{
+          0%{background-position:0% 50%;}
+          50%{background-position:100% 50%;}
+          100%{background-position:0% 50%;}
+        }
+        @keyframes flameFlick{
+          0%,100%{transform:scale(1) rotate(-3deg);filter:brightness(1) drop-shadow(0 0 3px rgba(255,120,0,0.85));}
+          30%{transform:scale(1.18) rotate(3deg);filter:brightness(1.35) drop-shadow(0 0 6px rgba(255,165,0,0.95));}
+          60%{transform:scale(0.94) rotate(-2deg);filter:brightness(1.1) drop-shadow(0 0 4px rgba(255,90,0,0.85));}
+        }
+      `}</style>
+    </div>
+  )
+}
