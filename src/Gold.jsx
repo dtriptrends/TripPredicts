@@ -5,7 +5,10 @@ import { supabase } from './supabase'
 
 const SERVER = 'https://trippredicts-production-cfad.up.railway.app'
 
-const LEAGUE_ORDER = ['ALL', 'NBA', 'MLB', 'NHL', 'NFL', 'WNBA', 'CS2', 'LOL', 'VALORANT', 'COD', 'SOCCER', 'TENNIS', 'GOLF', 'MMA']
+const LEAGUE_ORDER = ['ALL', 'MLB', 'WNBA', 'NBA', 'NHL', 'NFL', 'CS2', 'LOL', 'VALORANT', 'COD', 'SOCCER', 'TENNIS', 'GOLF', 'MMA']
+
+// Sports backed by real BALLDONTLIE game data. These tabs get the fiery treatment.
+const REAL_DATA_LEAGUES = ['MLB', 'WNBA']
 
 const LEAGUE_COLORS = {
   'ALL':      '#f5c842',
@@ -42,12 +45,12 @@ const FACTS = [
   'Recent form matters more than season averages when it comes to prop bets.',
   'The AI scores every line from 50 to 95. Gold means 90 or above.',
   'If the confidence is not there, no pick is made. Quality always beats quantity.',
-  'Trip Predicts covers NBA, MLB, NHL, NFL, CS2, LoL, Valorant and more.',
+  'MLB and WNBA picks are now backed by real game-by-game data from BALLDONTLIE.',
   'Lines are fetched fresh every time so you never see stale or outdated props.',
   'The AI never defaults to HIGHER. Direction is set by the data every time.',
   'Stat category breakdown is on every card so you can verify the logic yourself.',
   'Only pre-game props starting within the next 36 hours are ever shown.',
-  'Trip Predicts is free to use. No account, no paywall, just open and get picks.',
+  'A red flame tab means those numbers come from verified real game logs.',
   'Every gold pick includes a risk factor so you know what could go wrong.',
   'High usage players hit volume-based lines more consistently over a full season.',
   'Rare but powerful. These are the plays worth sizing up when they appear.',
@@ -322,6 +325,18 @@ function GoldContent() {
                 const isThisLoading = loadingLeague === league
                 const color = LEAGUE_COLORS[league] || '#7a8aaa'
                 const cached = picksCache[league] || []
+                const isReal = REAL_DATA_LEAGUES.includes(league)
+                const realStyle = isReal ? {
+                  border: `1px solid ${isActive ? '#ff7a1a' : 'rgba(255,95,25,0.55)'}`,
+                  background: isActive
+                    ? 'linear-gradient(115deg, #a82200, #ff6200, #ffa432, #ff5400, #a82200)'
+                    : 'linear-gradient(115deg, rgba(255,70,0,0.22), rgba(255,140,0,0.12), rgba(38,16,8,0.55), rgba(255,70,0,0.22))',
+                  backgroundSize: '300% 100%',
+                  color: isActive ? '#fff' : '#ffae73',
+                  fontWeight: 800,
+                  textShadow: isActive ? '0 0 9px rgba(255,150,0,0.75)' : 'none',
+                  animation: 'realFlow 3s linear infinite, realDataGlow 2.2s ease-in-out infinite',
+                } : {}
                 return (
                   <button key={league} onClick={() => handleTabSelect(league)} disabled={!!loadingLeague} style={{
                     background: isActive ? `${color}22` : 'var(--bg3)',
@@ -331,9 +346,12 @@ function GoldContent() {
                     padding: '8px 14px', borderRadius: '20px',
                     cursor: loadingLeague ? 'not-allowed' : 'pointer', transition: 'all 0.2s',
                     display: 'flex', alignItems: 'center', gap: '5px', whiteSpace: 'nowrap',
-                    opacity: loadingLeague && !isActive ? 0.5 : 1, WebkitTapHighlightColor: 'transparent'
+                    opacity: loadingLeague && !isActive ? 0.5 : 1, WebkitTapHighlightColor: 'transparent',
+                    ...realStyle
                   }}>
-                    <span style={{ fontSize: '9px', color: '#f5c842' }}>★</span>
+                    {isReal
+                      ? <span style={{ fontSize: '11px', display: 'inline-block', animation: 'flameFlick 0.85s ease-in-out infinite' }}>🔥</span>
+                      : <span style={{ fontSize: '9px', color: '#f5c842' }}>★</span>}
                     {league}
                     {isThisLoading && <span style={{ fontSize: '10px', animation: 'spin 1s linear infinite', display: 'inline-block' }}>⟳</span>}
                     {cached.length > 0 && !isThisLoading && <span style={{ background: isActive ? color : 'var(--border2)', color: isActive ? '#000' : 'var(--text3)', fontSize: '10px', fontWeight: 700, padding: '1px 6px', borderRadius: '10px' }}>{cached.length}</span>}
@@ -403,6 +421,20 @@ function GoldContent() {
       <style>{`
         @keyframes pulse{0%,100%{opacity:1;}50%{opacity:0.3;}}
         @keyframes spin{from{transform:rotate(0deg);}to{transform:rotate(360deg);}}
+        @keyframes realDataGlow{
+          0%,100%{box-shadow:0 0 8px rgba(255,60,0,0.35), 0 0 18px rgba(255,110,0,0.18), inset 0 0 8px rgba(255,90,0,0.15);}
+          50%{box-shadow:0 0 16px rgba(255,80,0,0.6), 0 0 34px rgba(255,140,0,0.32), inset 0 0 12px rgba(255,110,0,0.25);}
+        }
+        @keyframes realFlow{
+          0%{background-position:0% 50%;}
+          50%{background-position:100% 50%;}
+          100%{background-position:0% 50%;}
+        }
+        @keyframes flameFlick{
+          0%,100%{transform:scale(1) rotate(-3deg);filter:brightness(1) drop-shadow(0 0 3px rgba(255,120,0,0.85));}
+          30%{transform:scale(1.18) rotate(3deg);filter:brightness(1.35) drop-shadow(0 0 6px rgba(255,165,0,0.95));}
+          60%{transform:scale(0.94) rotate(-2deg);filter:brightness(1.1) drop-shadow(0 0 4px rgba(255,90,0,0.85));}
+        }
       `}</style>
     </div>
   )

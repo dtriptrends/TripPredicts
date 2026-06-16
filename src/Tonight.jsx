@@ -3,7 +3,10 @@ import PickCard from './PickCard'
 
 const SERVER = 'https://trippredicts-production-cfad.up.railway.app'
 
-const LEAGUE_ORDER = ['ALL', 'NBA', 'MLB', 'NHL', 'NFL', 'WNBA', 'CS2', 'LOL', 'VALORANT', 'COD', 'SOCCER', 'TENNIS', 'GOLF', 'MMA']
+const LEAGUE_ORDER = ['ALL', 'MLB', 'WNBA', 'NBA', 'NHL', 'NFL', 'CS2', 'LOL', 'VALORANT', 'COD', 'SOCCER', 'TENNIS', 'GOLF', 'MMA']
+
+// Sports backed by real BALLDONTLIE game data. These tabs get the fiery treatment.
+const REAL_DATA_LEAGUES = ['MLB', 'WNBA']
 
 const LEAGUE_COLORS = {
   'ALL':      '#f5c842',
@@ -32,6 +35,7 @@ const STEP_LABELS = [
 
 const FACTS = [
   'Trip Predicts pulls live lines directly from PrizePicks every time you load.',
+  'MLB and WNBA picks now show real game-by-game hit rates from verified data.',
   'Gold picks require 90% confidence or higher. Most sessions only have 1 or 2.',
   'Every pick shows a bull case and a bear case so you know the risk upfront.',
   'The AI never defaults to HIGHER. Direction is set by the data.',
@@ -42,7 +46,7 @@ const FACTS = [
   'The confidence score runs from 50 to 95. Gold means 90 or above.',
   'Lines are filtered to only show pre-game props starting within 36 hours.',
   'Trip Predicts was built to give everyday bettors a real analytical edge.',
-  'Esports props are included — CS2, LoL and Valorant all have strong lines.',
+  'A red flame tab means the numbers on those cards come from real game logs.',
   'HIGHER or LOWER is never a guess. The model picks a direction based on stats.',
   'Gold picks are rare. When they show up, they carry real conviction behind them.',
   'Trip Predicts is free to use. No account needed. Just open and get your picks.',
@@ -50,7 +54,6 @@ const FACTS = [
   'A balanced slate beats a single-sport parlay almost every time.',
   'The AI scans all available leagues simultaneously to find the best plays.',
   'Each card has a TRIP PREDICTS watermark so your screenshots carry the brand.',
-  'The backend caches PrizePicks data every 5 minutes for faster load times.',
 ]
 
 function shuffle(arr) {
@@ -238,6 +241,18 @@ export default function Tonight() {
                 const color = LEAGUE_COLORS[league] || '#7a8aaa'
                 const cached = picksCache[league] || []
                 const hasGold = cached.some(p => p.conf >= 90)
+                const isReal = REAL_DATA_LEAGUES.includes(league)
+                const realStyle = isReal ? {
+                  border: `1px solid ${isActive ? '#ff7a1a' : 'rgba(255,95,25,0.55)'}`,
+                  background: isActive
+                    ? 'linear-gradient(115deg, #a82200, #ff6200, #ffa432, #ff5400, #a82200)'
+                    : 'linear-gradient(115deg, rgba(255,70,0,0.22), rgba(255,140,0,0.12), rgba(38,16,8,0.55), rgba(255,70,0,0.22))',
+                  backgroundSize: '300% 100%',
+                  color: isActive ? '#fff' : '#ffae73',
+                  fontWeight: 800,
+                  textShadow: isActive ? '0 0 9px rgba(255,150,0,0.75)' : 'none',
+                  animation: 'realFlow 3s linear infinite, realDataGlow 2.2s ease-in-out infinite',
+                } : {}
                 return (
                   <button key={league} onClick={() => handleTabSelect(league)} disabled={!!loadingLeague} style={{
                     background: isActive ? `${color}22` : 'var(--bg3)',
@@ -247,9 +262,13 @@ export default function Tonight() {
                     padding: '8px 14px', borderRadius: '20px',
                     cursor: loadingLeague ? 'not-allowed' : 'pointer', transition: 'all 0.2s',
                     display: 'flex', alignItems: 'center', gap: '5px', whiteSpace: 'nowrap',
-                    opacity: loadingLeague && !isActive ? 0.5 : 1
+                    opacity: loadingLeague && !isActive ? 0.5 : 1,
+                    WebkitTapHighlightColor: 'transparent',
+                    ...realStyle
                   }}>
-                    {hasGold && <span style={{ fontSize: '9px', color: '#f5c842' }}>★</span>}
+                    {isReal
+                      ? <span style={{ fontSize: '11px', display: 'inline-block', animation: 'flameFlick 0.85s ease-in-out infinite' }}>🔥</span>
+                      : (hasGold && <span style={{ fontSize: '9px', color: '#f5c842' }}>★</span>)}
                     {league}
                     {isThisLoading && <span style={{ fontSize: '10px', animation: 'spin 1s linear infinite', display: 'inline-block' }}>⟳</span>}
                     {cached.length > 0 && !isThisLoading && <span style={{ background: isActive ? color : 'var(--border2)', color: isActive ? '#000' : 'var(--text3)', fontSize: '10px', fontWeight: 700, padding: '1px 6px', borderRadius: '10px' }}>{cached.length}</span>}
@@ -372,6 +391,20 @@ export default function Tonight() {
       <style>{`
         @keyframes pulse{0%,100%{opacity:1;}50%{opacity:0.3;}}
         @keyframes spin{from{transform:rotate(0deg);}to{transform:rotate(360deg);}}
+        @keyframes realDataGlow{
+          0%,100%{box-shadow:0 0 8px rgba(255,60,0,0.35), 0 0 18px rgba(255,110,0,0.18), inset 0 0 8px rgba(255,90,0,0.15);}
+          50%{box-shadow:0 0 16px rgba(255,80,0,0.6), 0 0 34px rgba(255,140,0,0.32), inset 0 0 12px rgba(255,110,0,0.25);}
+        }
+        @keyframes realFlow{
+          0%{background-position:0% 50%;}
+          50%{background-position:100% 50%;}
+          100%{background-position:0% 50%;}
+        }
+        @keyframes flameFlick{
+          0%,100%{transform:scale(1) rotate(-3deg);filter:brightness(1) drop-shadow(0 0 3px rgba(255,120,0,0.85));}
+          30%{transform:scale(1.18) rotate(3deg);filter:brightness(1.35) drop-shadow(0 0 6px rgba(255,165,0,0.95));}
+          60%{transform:scale(0.94) rotate(-2deg);filter:brightness(1.1) drop-shadow(0 0 4px rgba(255,90,0,0.85));}
+        }
       `}</style>
     </div>
   )

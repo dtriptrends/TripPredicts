@@ -1,6 +1,100 @@
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useMemo } from 'react'
+
+const SERVER = 'https://trippredicts-production-cfad.up.railway.app'
+
+// Sports with real game-by-game data wired in (BALLDONTLIE).
+const REAL_DATA_LEAGUES = ['MLB', 'WNBA']
 
 function tierOf(c) { return c >= 90 ? 'gold' : c >= 75 ? 'high' : 'regular' }
+
+// Map a PrizePicks prop label to the real stat value for one game row.
+// Combos (PRA, H+R+RBI, etc.) are computed from base fields. Returns null when
+// we cannot map the stat, so the UI hides the hit-rate instead of guessing.
+function bdlStatValue(league, g, propLabel) {
+  const p = String(propLabel || '').toLowerCase()
+
+  if (league === 'WNBA') {
+    const pts = +g.pts || 0, reb = +g.reb || 0, ast = +g.ast || 0
+    const stl = +g.stl || 0, blk = +g.blk || 0
+    const hasPts = p.includes('point') || p.includes('pts')
+    const hasReb = p.includes('rebound') || p.includes('reb')
+    const hasAst = p.includes('assist') || p.includes('ast')
+    if (hasPts && hasReb && hasAst) return pts + reb + ast
+    if (hasPts && hasReb) return pts + reb
+    if (hasPts && hasAst) return pts + ast
+    if (hasReb && hasAst) return reb + ast
+    if ((p.includes('blk') || p.includes('block')) && (p.includes('stl') || p.includes('steal'))) return blk + stl
+    if (p.includes('three') || p.includes('3-pt') || p.includes('3pt') || p.includes('3 pt')) return +g.fg3m || 0
+    if (p.includes('free throw')) return +g.ftm || 0
+    if (p.includes('fg') && p.includes('made')) return +g.fgm || 0
+    if (p.includes('turnover')) return +g.turnover || 0
+    if (hasReb) return reb
+    if (hasAst) return ast
+    if (p.includes('steal')) return stl
+    if (p.includes('block')) return blk
+    if (hasPts) return pts
+    return null
+  }
+
+  if (league === 'MLB') {
+    // pitcher props first, identified by pitch / allowed / earned run wording
+    if (p.includes('pitch') || p.includes('allowed') || p.includes('earned run')) {
+      if (p.includes('strikeout') || p.includes('strike out')) return +g.p_k || 0
+      if (p.includes('hit')) return +g.p_hits || 0
+      if (p.includes('earned run')) return +g.er || 0
+      if (p.includes('walk')) return +g.p_bb || 0
+      if (p.includes('out')) return +g.pitching_outs || 0
+      return null
+    }
+    const hits = +g.hits || 0, runs = +g.runs || 0, rbi = +g.rbi || 0
+    const hr = +g.hr || 0, doubles = +g.doubles || 0, triples = +g.triples || 0
+    if (p.includes('hits') && p.includes('runs') && p.includes('rbi')) return hits + runs + rbi
+    if (p.includes('total base')) return +g.total_bases || 0
+    if (p.includes('home run')) return hr
+    if (p.includes('stolen')) return +g.stolen_bases || 0
+    if (p.includes('single')) return Math.max(0, hits - doubles - triples - hr)
+    if (p.includes('double')) return doubles
+    if (p.includes('triple')) return triples
+    if (p.includes('walk')) return +g.bb || 0
+    if (p.includes('rbi')) return rbi
+    if (p.includes('run')) return runs
+    if (p.includes('strikeout') || p === 'k') return +g.k || 0
+    if (p.includes('hit')) return hits
+    return null
+  }
+
+  return null
+}
+
+function fmtDate(d) {
+  if (!d) return ''
+  const dt = new Date(d)
+  if (isNaN(dt.getTime())) return ''
+  return `${dt.getMonth() + 1}/${dt.getDate()}`
+}
+
+// Honest last-N bar chart. Cleared games are green, missed are red, with a
+// dashed marker at the prop line. Most recent game sits on the right.
+function MiniChart({ real }) {
+  const ordered = [...real.rows].reverse()
+  const maxV = Math.max(real.line, ...ordered.map(r => r.value)) || 1
+  const H = 42
+  return (
+    <div style={{ position: 'relative', display: 'flex', alignItems: 'flex-end', gap: '2px', height: `${H}px`, marginTop: '7px' }}>
+      <div style={{ position: 'absolute', left: 0, right: 0, bottom: `${(real.line / maxV) * H}px`, borderTop: '1px dashed rgba(245,200,66,0.65)', zIndex: 2 }} />
+      {ordered.map((r, i) => {
+        const h = Math.max(3, (r.value / maxV) * H)
+        return (
+          <div key={i} title={`${fmtDate(r.date)}: ${r.value}`} style={{
+            flex: 1, height: `${h}px`, borderRadius: '2px 2px 0 0',
+            background: r.cleared ? 'linear-gradient(180deg,#15d68f,#0a7d5a)' : 'linear-gradient(180deg,#ef4444,#7d2a2a)',
+            boxShadow: r.cleared ? '0 0 6px rgba(21,214,143,0.45)' : 'none',
+          }} />
+        )
+      })}
+    </div>
+  )
+}
 
 const LEAGUE_COLORS = {
   'NBA':      { bg: 'rgba(225,114,16,0.15)',  color: '#e17210', border: 'rgba(225,114,16,0.3)' },
@@ -54,12 +148,55 @@ export default function PickCard({ pick, delay = 0 }) {
   const league = (pick.league || pick.sport || '').toUpperCase()
   const lc = LEAGUE_COLORS[league] || { bg: 'rgba(255,255,255,0.06)', color: '#7a8aaa', border: 'rgba(255,255,255,0.1)' }
   const isGold = t === 'gold'
+  const hasRealData = REAL_DATA_LEAGUES.includes(league)
+
+  // real game log (MLB / WNBA only)
+  const [gamelog, setGamelog] = useState(null)
+  const [glState, setGlState] = useState('idle') // idle | loading | done | empty | error
 
   useEffect(() => {
     const t1 = setTimeout(() => setRevealed(true), delay)
     const t2 = setTimeout(() => setBarWidth(pick.conf), delay + 400)
     return () => { clearTimeout(t1); clearTimeout(t2) }
   }, [])
+
+  useEffect(() => {
+    if (!hasRealData || !pick.name) return
+    let cancelled = false
+    setGlState('loading')
+    const timer = setTimeout(() => {
+      fetch(`${SERVER}/player-gamelog`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ player: pick.name, league })
+      })
+        .then(r => r.json())
+        .then(d => {
+          if (cancelled) return
+          setGamelog(d)
+          setGlState(d && d.games && d.games.length ? 'done' : 'empty')
+        })
+        .catch(() => { if (!cancelled) setGlState('error') })
+    }, Math.min(delay, 500) + 40)
+    return () => { cancelled = true; clearTimeout(timer) }
+  }, [pick.name, league, hasRealData])
+
+  const real = useMemo(() => {
+    if (!gamelog || !gamelog.games || !gamelog.games.length) return null
+    const line = parseFloat(pick.val)
+    if (isNaN(line)) return null
+    const rows = []
+    for (const g of gamelog.games) {
+      const v = bdlStatValue(league, g, pick.stat)
+      if (v === null || v === undefined || isNaN(v)) continue
+      rows.push({ date: g.date, value: v, cleared: up ? v > line : v < line })
+    }
+    if (!rows.length) return null
+    const cleared = rows.filter(r => r.cleared).length
+    return { rows, cleared, total: rows.length, line, pct: Math.round((cleared / rows.length) * 100) }
+  }, [gamelog, pick.val, pick.stat, league, up])
+
+  const pctColor = real ? (real.pct >= 66 ? '#15d68f' : real.pct >= 40 ? '#f5c842' : '#ef4444') : '#7a8aaa'
 
   const borderColor = isGold ? '#b84000' : t === 'high' ? 'rgba(16,185,129,0.3)' : 'rgba(255,255,255,0.06)'
   const confColor = isGold ? '#f5c842' : t === 'high' ? '#10b981' : '#7a8aaa'
@@ -178,6 +315,20 @@ export default function PickCard({ pick, delay = 0 }) {
             background: lc.bg, color: lc.color, border: `1px solid ${lc.border}`
           }}>{league || pick.sport}</div>
 
+          {/* Real-data flag on the image, for MLB / WNBA */}
+          {hasRealData && (
+            <div style={{
+              position: 'absolute', top: '8px', left: '8px',
+              display: 'inline-flex', alignItems: 'center', gap: '3px',
+              fontFamily: "'Barlow Condensed',sans-serif", fontSize: '9px', fontWeight: 700,
+              letterSpacing: '1px', textTransform: 'uppercase',
+              padding: '3px 7px', borderRadius: '10px',
+              background: 'linear-gradient(90deg,#c2360a,#ff6a00)', color: '#fff',
+              border: '1px solid rgba(255,140,40,0.55)',
+              animation: 'realGlow 2.4s ease-in-out infinite',
+            }}>🔥 Real</div>
+          )}
+
           {isGold && revealed && (
             <div style={{ position: 'absolute', inset: 0, pointerEvents: 'none', overflow: 'hidden' }}>
               <div style={{ position: 'absolute', top: 0, left: 0, width: '45%', height: '100%', background: 'linear-gradient(105deg,transparent,rgba(255,140,40,0.07),transparent)', animation: 'shimmerMove 2.5s 0.8s ease infinite' }} />
@@ -190,17 +341,51 @@ export default function PickCard({ pick, delay = 0 }) {
           <div style={{ fontFamily: "'Barlow Condensed',sans-serif", fontSize: '15px', fontWeight: 700, color: '#eef2ff', letterSpacing: '0.5px', lineHeight: 1.1 }}>{pick.name}</div>
           <div style={{ fontSize: '11px', color: '#7a8aaa', marginTop: '2px' }}>{pick.meta}</div>
 
-          {/* Record badge */}
-          {pick.record && (
-            <div style={{
-              display: 'inline-flex', alignItems: 'center', gap: '5px',
-              marginTop: '5px', marginBottom: '4px',
-              background: 'rgba(16,185,129,0.08)', border: '1px solid rgba(16,185,129,0.2)',
-              borderRadius: '8px', padding: '3px 8px'
-            }}>
-              <span style={{ fontSize: '10px' }}>📊</span>
-              <span style={{ fontSize: '10px', color: '#10b981', fontFamily: "'Barlow Condensed',sans-serif", fontWeight: 600, letterSpacing: '0.3px' }}>{pick.record}</span>
+          {/* Real data panel (MLB / WNBA) replaces the AI record badge */}
+          {hasRealData ? (
+            <div style={{ marginTop: '6px', marginBottom: '6px' }}>
+              {real ? (
+                <div style={{
+                  border: '1px solid rgba(255,90,20,0.4)',
+                  background: 'linear-gradient(135deg, rgba(255,70,0,0.13), rgba(30,12,6,0.55))',
+                  borderRadius: '10px', padding: '7px 9px',
+                  animation: 'realGlow 2.4s ease-in-out infinite',
+                }}>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', fontSize: '9px', fontWeight: 700, letterSpacing: '1px', color: '#ff8a4c', fontFamily: "'Barlow Condensed',sans-serif", textTransform: 'uppercase' }}>
+                      <span style={{ fontSize: '10px' }}>🔥</span> Real Data
+                    </span>
+                    <span style={{ fontSize: '12px', fontWeight: 700, fontFamily: "'Barlow Condensed',sans-serif", color: pctColor }}>
+                      {real.cleared} of {real.total} hit · {real.pct}%
+                    </span>
+                  </div>
+                  <MiniChart real={real} />
+                  <div style={{ fontSize: '8px', color: 'rgba(255,170,130,0.6)', marginTop: '5px', letterSpacing: '0.4px' }}>
+                    Last {real.total} games vs {pick.val} · verified by BALLDONTLIE
+                  </div>
+                </div>
+              ) : glState === 'loading' ? (
+                <div style={{ fontSize: '10px', color: '#ff8a4c', fontFamily: "'Barlow Condensed',sans-serif", display: 'flex', alignItems: 'center', gap: '6px', padding: '2px 0' }}>
+                  <span style={{ fontSize: '10px', animation: 'spin 1s linear infinite', display: 'inline-block' }}>⟳</span> Loading real game data
+                </div>
+              ) : (
+                <div style={{ fontSize: '10px', color: '#7a8aaa', fontFamily: "'Barlow Condensed',sans-serif", padding: '2px 0' }}>
+                  No real game data for this stat yet
+                </div>
+              )}
             </div>
+          ) : (
+            pick.record && (
+              <div style={{
+                display: 'inline-flex', alignItems: 'center', gap: '5px',
+                marginTop: '5px', marginBottom: '4px',
+                background: 'rgba(16,185,129,0.08)', border: '1px solid rgba(16,185,129,0.2)',
+                borderRadius: '8px', padding: '3px 8px'
+              }}>
+                <span style={{ fontSize: '10px' }}>📊</span>
+                <span style={{ fontSize: '10px', color: '#10b981', fontFamily: "'Barlow Condensed',sans-serif", fontWeight: 600, letterSpacing: '0.3px' }}>{pick.record}</span>
+              </div>
+            )
           )}
 
           {(pick.time || pick.date) && (
@@ -256,11 +441,35 @@ export default function PickCard({ pick, delay = 0 }) {
 
         {/* Info section — maxHeight transition instead of conditional render = no mobile freeze */}
         <div style={{
-          maxHeight: infoOpen ? '400px' : '0px',
+          maxHeight: infoOpen ? '640px' : '0px',
           overflow: 'hidden',
           transition: 'max-height 0.35s ease',
         }}>
           <div style={{ padding: '12px 13px', borderTop: `1px solid ${isGold ? 'rgba(255,60,0,0.12)' : 'rgba(255,255,255,0.06)'}`, background: isGold ? '#130800' : '#0c1018' }}>
+
+            {/* Real recent games (MLB / WNBA) */}
+            {hasRealData && real && (
+              <div style={{ marginBottom: '12px' }}>
+                <div style={{ fontSize: '9px', color: '#ff8a4c', textTransform: 'uppercase', letterSpacing: '1.5px', marginBottom: '6px', fontFamily: "'Barlow Condensed',sans-serif", fontWeight: 600 }}>
+                  🔥 Recent games · {real.cleared}/{real.total} cleared {pick.val}
+                </div>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
+                  {[...real.rows].reverse().map((r, i) => (
+                    <div key={i} style={{
+                      display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '2px',
+                      minWidth: '34px', padding: '4px 2px', borderRadius: '6px',
+                      background: r.cleared ? 'rgba(21,214,143,0.1)' : 'rgba(239,68,68,0.1)',
+                      border: `1px solid ${r.cleared ? 'rgba(21,214,143,0.25)' : 'rgba(239,68,68,0.25)'}`,
+                    }}>
+                      <span style={{ fontSize: '8px', color: '#7a8aaa' }}>{fmtDate(r.date)}</span>
+                      <span style={{ fontFamily: "'Barlow Condensed',sans-serif", fontSize: '13px', fontWeight: 700, color: r.cleared ? '#15d68f' : '#ef4444' }}>{r.value}</span>
+                      <span style={{ fontSize: '8px', color: r.cleared ? '#15d68f' : '#ef4444' }}>{r.cleared ? '✓' : '✗'}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
             <div style={{ marginBottom: '10px' }}>
               <div style={{ fontSize: '9px', color: isGold ? 'rgba(255,110,0,0.6)' : '#3a4a6a', textTransform: 'uppercase', letterSpacing: '1.5px', marginBottom: '4px', fontFamily: "'Barlow Condensed',sans-serif", fontWeight: 600 }}>Why it's strong</div>
               <div style={{ fontSize: '12px', color: '#7a8aaa', lineHeight: 1.55 }}>{pick.bull}</div>
@@ -291,10 +500,15 @@ export default function PickCard({ pick, delay = 0 }) {
           33%      { box-shadow: 0 0 24px 6px rgba(255,90,0,0.35), 0 0 55px 12px rgba(255,140,0,0.18); }
           66%      { box-shadow: 0 0 20px 5px rgba(255,140,0,0.3), 0 0 48px 10px rgba(245,190,50,0.15); }
         }
+        @keyframes realGlow {
+          0%,100% { box-shadow: 0 0 8px rgba(255,70,0,0.25), inset 0 0 12px rgba(255,90,0,0.06); }
+          50%      { box-shadow: 0 0 16px rgba(255,90,0,0.45), inset 0 0 16px rgba(255,120,0,0.1); }
+        }
         @keyframes shimmerMove {
           0% { transform: translateX(-100%); }
           100% { transform: translateX(300%); }
         }
+        @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
         @keyframes flicker0 {
           from { transform: scaleX(1)    translateY(2px)   rotate(-4deg); opacity: 0.92; }
           to   { transform: scaleX(0.5)  translateY(-18px) rotate(5deg);  opacity: 0.05; }
