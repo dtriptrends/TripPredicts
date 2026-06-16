@@ -232,11 +232,13 @@ async function csGamelog(player, lg) {
       const sData = await bdlFetch(`https://api.balldontlie.io/cs/v1/player_match_stats?match_id=${m.id}`)
       const row = (sData.data || []).find(r => r.player && r.player.id === match.id)
       if (row) {
+        const mapsPlayed = (Number(m.team1_score) || 0) + (Number(m.team2_score) || 0)
         games.push({
           kills: row.kills, deaths: row.deaths, assists: row.assists,
           adr: row.adr, kast: row.kast, rating: row.rating,
           headshot_percentage: row.headshot_percentage,
           first_kills: row.first_kills, first_deaths: row.first_deaths,
+          maps_played: mapsPlayed > 0 ? mapsPlayed : 1,
           match_id: m.id,
           date: m.start_time || null
         })
@@ -337,12 +339,20 @@ function dedupe(picks) {
 function validateLines(picks, rawLines) {
   if (!rawLines || rawLines.length === 0) return picks
   return picks.map(p => {
-    let match = rawLines.find(l =>
-      l.name.toLowerCase() === p.name.toLowerCase() &&
-      l.stat.toLowerCase() === p.stat.toLowerCase()
-    )
-    if (!match) {
-      match = rawLines.find(l => l.name.toLowerCase() === p.name.toLowerCase())
+    const nameMatches = rawLines.filter(l => l.name.toLowerCase() === p.name.toLowerCase())
+    let match = null
+    if (nameMatches.length) {
+      const statMatches = nameMatches.filter(l => l.stat.toLowerCase() === p.stat.toLowerCase())
+      const pool = statMatches.length ? statMatches : nameMatches
+      const target = parseFloat(p.val)
+      if (!isNaN(target) && pool.length > 1) {
+        // pin to the real board line closest to the value the AI returned, so a
+        // shared stat name (or partial-game line) can never show the wrong number
+        match = pool.reduce((best, l) =>
+          Math.abs(Number(l.line) - target) < Math.abs(Number(best.line) - target) ? l : best)
+      } else {
+        match = pool[0]
+      }
     }
     if (match) {
       p.val = String(match.line)
@@ -453,7 +463,7 @@ Rules:
 - dir must be HIGHER or LOWER based on clear statistical evidence
 - conf is 50-95
 - record: short specific statement like "11 of last 14 games hit this line"
-- Vary stat categories. Do not lean only on points and rebounds. Mix in props like 3-pointers made, shot attempts, steals, blocks, total bases, strikeouts and others when the lines and form support them
+- Vary stat categories. Do not lean only on points and rebounds. Mix in props like 3-pointers made, shot attempts, steals, blocks, turnovers, total bases, strikeouts and others when the lines and form support them
 - NEVER pick the same player more than once
 - Give exactly ${pickCount} picks`
         }]
@@ -520,7 +530,7 @@ Rules:
 - conf must be 90 or above — never assign below 90 on this endpoint
 - dir is HIGHER or LOWER based on real statistical evidence — never guess
 - record: MUST be specific like "Hit in 11 of last 14 games" or "Averaged well above this line over last 10 games"
-- Vary stat categories when the data supports it. Do not lean only on points and rebounds. Mix in 3-pointers made, shot attempts, steals, blocks, total bases, strikeouts and other categories
+- Vary stat categories when the data supports it. Do not lean only on points and rebounds. Mix in 3-pointers made, shot attempts, steals, blocks, turnovers, total bases, strikeouts and other categories
 - NEVER pick the same player twice
 - Always return at least 3 picks`
         }]

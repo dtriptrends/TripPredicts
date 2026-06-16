@@ -5,10 +5,10 @@ import { supabase } from './supabase'
 
 const SERVER = 'https://trippredicts-production-cfad.up.railway.app'
 
-const LEAGUE_ORDER = ['ALL', 'MLB', 'WNBA', 'NBA', 'NHL', 'NFL', 'CS2', 'LOL', 'VALORANT', 'COD', 'SOCCER', 'TENNIS', 'GOLF', 'MMA']
+const LEAGUE_ORDER = ['ALL', 'MLB', 'WNBA', 'LOL', 'CS2', 'NBA', 'NHL', 'NFL', 'VALORANT', 'COD', 'SOCCER', 'TENNIS', 'GOLF', 'MMA']
 
 // Sports backed by real BALLDONTLIE game data. These tabs get the fiery treatment.
-const REAL_DATA_LEAGUES = ['MLB', 'WNBA']
+const REAL_DATA_LEAGUES = ['MLB', 'WNBA', 'LOL', 'CS2']
 
 const LEAGUE_COLORS = {
   'ALL':      '#f5c842',

@@ -3,7 +3,17 @@ import React, { useState, useEffect, useMemo } from 'react'
 const SERVER = 'https://trippredicts-production-cfad.up.railway.app'
 
 // Sports with real game-by-game data wired in (BALLDONTLIE).
-const REAL_DATA_LEAGUES = ['MLB', 'WNBA']
+const REAL_DATA_LEAGUES = ['MLB', 'WNBA', 'LOL', 'CS2']
+
+// PrizePicks esports props are scoped to a number of maps ("Map 1", "Maps 1-2").
+// We read that count so we can measure real per-map pace against the line.
+function mapScope(label) {
+  const p = String(label || '').toLowerCase()
+  let m = p.match(/maps?\s*(\d+)\s*(?:-|to|through)\s*(\d+)/)
+  if (m) return Math.max(1, parseInt(m[2], 10) - parseInt(m[1], 10) + 1)
+  if (/map\s*\d+/.test(p)) return 1
+  return 1
+}
 
 function tierOf(c) { return c >= 90 ? 'gold' : c >= 75 ? 'high' : 'regular' }
 
@@ -75,6 +85,30 @@ function bdlStatValue(league, g, propLabel) {
     if (p.includes('strikeout') || p === 'k') return +g.k || 0
     if (p.includes('at bat') || p.includes('at-bat')) return +g.at_bats || 0
     if (p.includes('hit')) return hits
+    return null
+  }
+
+  if (league === 'LOL') {
+    // per-map rows from player_match_map_stats
+    if (p.includes('kill') && !p.includes('participation')) return +g.kills || 0
+    if (p.includes('death')) return +g.deaths || 0
+    if (p.includes('assist')) return +g.assists || 0
+    if (p.includes('cs') || p.includes('creep')) return +g.creep_score || 0
+    if (p.includes('gold')) return +g.gold_earned || 0
+    if (p.includes('damage')) return +g.damage || 0
+    if (p.includes('ward')) return +g.wards_placed || 0
+    return null
+  }
+
+  if (league === 'CS2') {
+    // per-match totals (counts). The caller divides by maps_played for per-map
+    // pace, so only true counting stats belong here. ADR/rating/KAST are already
+    // per-round rates and must not be scaled, so they are intentionally omitted.
+    if (p.includes('kill') && !p.includes('first')) return +g.kills || 0
+    if (p.includes('death')) return +g.deaths || 0
+    if (p.includes('assist')) return +g.assists || 0
+    if (p.includes('first kill') || p.includes('opening kill')) return +g.first_kills || 0
+    // headshots: only a percentage is available, not a count, so we can't verify it
     return null
   }
 
@@ -221,19 +255,28 @@ export default function PickCard({ pick, delay = 0 }) {
     return () => { cancelled = true; clearTimeout(timer) }
   }, [pick.name, league, hasRealData])
 
-  // per-game stat values, computed once from the real game log
+  const isEsport = league === 'LOL' || league === 'CS2'
+  const mapCount = isEsport ? mapScope(pick.stat) : 1
+
+  // per-game stat values, computed once from the real game log. For esports we
+  // reduce to a per-MAP value: LoL rows are already per map; CS2 rows are match
+  // totals, so we divide by the maps played in that match.
   const gameVals = useMemo(() => {
     if (!gamelog || !gamelog.games || !gamelog.games.length) return null
     const arr = []
     for (const game of gamelog.games) {
-      const v = bdlStatValue(league, game, pick.stat)
+      let v = bdlStatValue(league, game, pick.stat)
       if (v === null || v === undefined || isNaN(v)) continue
+      if (league === 'CS2') {
+        const maps = Number(game.maps_played) || 1
+        v = v / maps
+      }
       arr.push({ date: game.date, value: v })
     }
     return arr.length ? arr : null
   }, [gamelog, league, pick.stat])
 
-  // hit-rate of clearing any line in the pick's direction
+  // hit-rate of clearing a line in the pick's direction
   function rateFor(lineRaw) {
     if (!gameVals) return null
     const L = parseFloat(lineRaw)
@@ -243,13 +286,16 @@ export default function PickCard({ pick, delay = 0 }) {
     return { rows, cleared, total: rows.length, line: L, pct: Math.round((cleared / rows.length) * 100) }
   }
 
-  const real = useMemo(() => rateFor(pick.val), [gameVals, pick.val, up])
+  // For esports the prop line covers mapCount maps, so the per-map target is
+  // line / mapCount. Ball sports compare against the line directly.
+  const effLine = isEsport ? (parseFloat(pick.val) / mapCount) : pick.val
+  const real = useMemo(() => rateFor(effLine), [gameVals, effLine, up])
 
   // Flag the goblin (safer/lower) or demon (harder/higher) line, but only when
   // the real data earns it: goblin near-automatic, or demon still live.
   const GOBLIN_LOCK = 80, DEMON_LIVE = 50
   const variant = useMemo(() => {
-    if (!real || !pick.altLines) return null
+    if (!real || !pick.altLines || isEsport) return null
     const dL = pick.altLines.demon, gL = pick.altLines.goblin
     if (dL != null && dL !== real.line) {
       const dr = rateFor(dL)
@@ -419,15 +465,17 @@ export default function PickCard({ pick, delay = 0 }) {
                 }}>
                   <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                     <span style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', fontSize: '9px', fontWeight: 700, letterSpacing: '1px', color: '#ff8a4c', fontFamily: "'Barlow Condensed',sans-serif", textTransform: 'uppercase' }}>
-                      <span style={{ fontSize: '10px' }}>🔥</span> Real Data
+                      <span style={{ fontSize: '10px' }}>🔥</span> Real Data{isEsport ? ' · per map' : ''}
                     </span>
                     <span style={{ fontSize: '12px', fontWeight: 700, fontFamily: "'Barlow Condensed',sans-serif", color: pctColor }}>
-                      {real.cleared} of {real.total} hit · {real.pct}%
+                      {real.cleared} of {real.total} {isEsport ? 'maps' : 'hit'} · {real.pct}%
                     </span>
                   </div>
                   <MiniChart real={real} />
                   <div style={{ fontSize: '8px', color: 'rgba(255,170,130,0.6)', marginTop: '5px', letterSpacing: '0.4px' }}>
-                    Last {real.total} games vs {pick.val} · verified by BALLDONTLIE
+                    {isEsport
+                      ? `Last ${real.total} maps · per-map pace vs ${pick.val}${mapCount > 1 ? ` (${mapCount} maps)` : ''} · BALLDONTLIE`
+                      : `Last ${real.total} games vs ${pick.val} · verified by BALLDONTLIE`}
                   </div>
                 </div>
               ) : glState === 'loading' ? (
@@ -520,7 +568,7 @@ export default function PickCard({ pick, delay = 0 }) {
             {hasRealData && real && (
               <div style={{ marginBottom: '12px' }}>
                 <div style={{ fontSize: '9px', color: '#ff8a4c', textTransform: 'uppercase', letterSpacing: '1.5px', marginBottom: '6px', fontFamily: "'Barlow Condensed',sans-serif", fontWeight: 600 }}>
-                  🔥 Recent games · {real.cleared}/{real.total} cleared {pick.val}
+                  🔥 Recent {isEsport ? 'maps' : 'games'} · {real.cleared}/{real.total} cleared {isEsport ? `${(parseFloat(pick.val) / mapCount).toFixed(1)}/map` : pick.val}
                 </div>
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
                   {[...real.rows].reverse().map((r, i) => (
@@ -531,7 +579,7 @@ export default function PickCard({ pick, delay = 0 }) {
                       border: `1px solid ${r.cleared ? 'rgba(21,214,143,0.25)' : 'rgba(239,68,68,0.25)'}`,
                     }}>
                       <span style={{ fontSize: '8px', color: '#7a8aaa' }}>{fmtDate(r.date)}</span>
-                      <span style={{ fontFamily: "'Barlow Condensed',sans-serif", fontSize: '13px', fontWeight: 700, color: r.cleared ? '#15d68f' : '#ef4444' }}>{r.value}</span>
+                      <span style={{ fontFamily: "'Barlow Condensed',sans-serif", fontSize: '13px', fontWeight: 700, color: r.cleared ? '#15d68f' : '#ef4444' }}>{Number.isInteger(r.value) ? r.value : r.value.toFixed(1)}</span>
                       <span style={{ fontSize: '8px', color: r.cleared ? '#15d68f' : '#ef4444' }}>{r.cleared ? '✓' : '✗'}</span>
                     </div>
                   ))}
