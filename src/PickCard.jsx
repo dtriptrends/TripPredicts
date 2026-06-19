@@ -3,7 +3,7 @@ import React, { useState, useEffect, useMemo } from 'react'
 const SERVER = 'https://trippredicts-production-cfad.up.railway.app'
 
 // Sports with real game-by-game data wired in (BALLDONTLIE).
-const REAL_DATA_LEAGUES = ['MLB', 'WNBA', 'LOL', 'CS2']
+const REAL_DATA_LEAGUES = ['MLB']
 
 // PrizePicks esports props are scoped to a number of maps ("Map 1", "Maps 1-2").
 // We read that count so we can measure real per-map pace against the line.
