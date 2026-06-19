@@ -96,6 +96,21 @@ async function bdlFetch(url) {
   return r.json()
 }
 
+// Pull every row across pages (cursor pagination), capped so one slow player
+// can't fan out forever. Three pages of 100 covers a full MLB season.
+async function bdlFetchAll(baseUrl, maxPages = 3) {
+  let all = []
+  let cursor = null
+  for (let i = 0; i < maxPages; i++) {
+    const url = cursor ? `${baseUrl}&cursor=${cursor}` : baseUrl
+    const r = await bdlFetch(url)
+    all = all.concat(r.data || [])
+    cursor = r.meta && r.meta.next_cursor
+    if (!cursor || !(r.data || []).length) break
+  }
+  return all
+}
+
 // Recency key for WNBA, whose rows carry a nested game object with a real date.
 function gameSortKey(row) {
   if (row.game && row.game.date) return new Date(row.game.date).getTime()
@@ -115,8 +130,10 @@ function bdlPlayed(row, lg) {
   if (lg === 'MLB') {
     const pa = Number(row.plate_appearances) || 0
     const ab = Number(row.at_bats) || 0
-    const ip = Number(row.ip) || 0
-    return pa > 0 || ab > 0 || ip > 0
+    const outs = Number(row.pitching_outs) || 0   // innings are recorded as outs
+    const bf = Number(row.batters_faced) || 0
+    const pc = Number(row.pitch_count) || 0
+    return pa > 0 || ab > 0 || outs > 0 || bf > 0 || pc > 0
   }
   return true
 }
@@ -138,22 +155,19 @@ async function ballGamelog(player, lg, sport) {
   if (sport.needsGameDates) {
     const teamId = match.team && match.team.id
     if (teamId) {
-      const gData = await bdlFetch(`https://api.balldontlie.io/${sport.path}/v1/games?seasons[]=${sport.season}&team_ids[]=${teamId}&season_type=regular&per_page=100`)
-      const recent = (gData.data || [])
-        .filter(g => g.id && g.date)
-        .sort((a, b) => new Date(b.date) - new Date(a.date))
-        .slice(0, 25)
+      // Date map from the team's regular-season games (also strips spring training).
+      const gameRows = await bdlFetchAll(`https://api.balldontlie.io/${sport.path}/v1/games?seasons[]=${sport.season}&team_ids[]=${teamId}&season_type=regular&per_page=100`)
       const dateMap = {}
-      const idParams = recent.map(g => { dateMap[g.id] = g.date; return `game_ids[]=${g.id}` }).join('&')
-      if (idParams) {
-        const sData = await bdlFetch(`https://api.balldontlie.io/${sport.path}/v1/${sport.statsPath}?player_ids[]=${match.id}&${idParams}&per_page=100`)
-        games = (sData.data || [])
-          .filter(g => bdlPlayed(g, lg))
-          .map(g => ({ ...g, date: dateMap[g.game_id] || null }))
-          .filter(g => g.date)
-          .sort((a, b) => new Date(b.date) - new Date(a.date))
-          .slice(0, 15)
-      }
+      gameRows.forEach(g => { if (g.id && g.date) dateMap[g.id] = g.date })
+      // The player's full season stat rows, using single-value params that the
+      // API honors reliably (the old game_ids[] list collapsed to one game).
+      const statRows = await bdlFetchAll(`https://api.balldontlie.io/${sport.path}/v1/${sport.statsPath}?player_ids[]=${match.id}&seasons[]=${sport.season}&per_page=100`)
+      games = statRows
+        .filter(g => bdlPlayed(g, lg))
+        .map(g => ({ ...g, date: dateMap[g.game_id] || null }))
+        .filter(g => g.date) // regular season only (spring training game_ids aren't in the map)
+        .sort((a, b) => new Date(b.date) - new Date(a.date))
+        .slice(0, 15)
     }
   } else {
     const sData = await bdlFetch(`https://api.balldontlie.io/${sport.path}/v1/${sport.statsPath}?player_ids[]=${match.id}&seasons[]=${sport.season}&per_page=100`)

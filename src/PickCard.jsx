@@ -5,6 +5,9 @@ const SERVER = 'https://trippredicts-production-cfad.up.railway.app'
 // Sports with real game-by-game data wired in (BALLDONTLIE).
 const REAL_DATA_LEAGUES = ['MLB']
 
+// Never show a real-data chart on a tiny sample. Hide it until we have enough.
+const MIN_REAL_GAMES = 10
+
 // PrizePicks esports props are scoped to a number of maps ("Map 1", "Maps 1-2").
 // We read that count so we can measure real per-map pace against the line.
 function mapScope(label) {
@@ -295,7 +298,7 @@ export default function PickCard({ pick, delay = 0 }) {
   // the real data earns it: goblin near-automatic, or demon still live.
   const GOBLIN_LOCK = 80, DEMON_LIVE = 50
   const variant = useMemo(() => {
-    if (!real || !pick.altLines || isEsport) return null
+    if (!real || real.total < MIN_REAL_GAMES || !pick.altLines || isEsport) return null
     const dL = pick.altLines.demon, gL = pick.altLines.goblin
     if (dL != null && dL !== real.line) {
       const dr = rateFor(dL)
@@ -456,7 +459,7 @@ export default function PickCard({ pick, delay = 0 }) {
           {/* Real data panel (MLB / WNBA) replaces the AI record badge */}
           {hasRealData ? (
             <div style={{ marginTop: '6px', marginBottom: '6px' }}>
-              {real ? (
+              {real && real.total >= MIN_REAL_GAMES ? (
                 <div style={{
                   border: '1px solid rgba(255,90,20,0.4)',
                   background: 'linear-gradient(135deg, rgba(255,70,0,0.13), rgba(30,12,6,0.55))',
@@ -481,6 +484,10 @@ export default function PickCard({ pick, delay = 0 }) {
               ) : glState === 'loading' ? (
                 <div style={{ fontSize: '10px', color: '#ff8a4c', fontFamily: "'Barlow Condensed',sans-serif", display: 'flex', alignItems: 'center', gap: '6px', padding: '2px 0' }}>
                   <span style={{ fontSize: '10px', animation: 'spin 1s linear infinite', display: 'inline-block' }}>⟳</span> Loading real game data
+                </div>
+              ) : real ? (
+                <div style={{ fontSize: '10px', color: '#7a8aaa', fontFamily: "'Barlow Condensed',sans-serif", padding: '2px 0' }}>
+                  Not enough game history yet ({real.total} of {MIN_REAL_GAMES} needed)
                 </div>
               ) : (
                 <div style={{ fontSize: '10px', color: '#7a8aaa', fontFamily: "'Barlow Condensed',sans-serif", padding: '2px 0' }}>
@@ -565,7 +572,7 @@ export default function PickCard({ pick, delay = 0 }) {
           <div style={{ padding: '12px 13px', borderTop: `1px solid ${isGold ? 'rgba(255,60,0,0.12)' : 'rgba(255,255,255,0.06)'}`, background: isGold ? '#130800' : '#0c1018' }}>
 
             {/* Real recent games (MLB / WNBA) */}
-            {hasRealData && real && (
+            {hasRealData && real && real.total >= MIN_REAL_GAMES && (
               <div style={{ marginBottom: '12px' }}>
                 <div style={{ fontSize: '9px', color: '#ff8a4c', textTransform: 'uppercase', letterSpacing: '1.5px', marginBottom: '6px', fontFamily: "'Barlow Condensed',sans-serif", fontWeight: 600 }}>
                   🔥 Recent {isEsport ? 'maps' : 'games'} · {real.cleared}/{real.total} cleared {isEsport ? `${(parseFloat(pick.val) / mapCount).toFixed(1)}/map` : pick.val}
