@@ -3,7 +3,7 @@ import React, { useState, useEffect, useMemo } from 'react'
 const SERVER = 'https://trippredicts-production-cfad.up.railway.app'
 
 // Sports with real game-by-game data wired in (BALLDONTLIE).
-const REAL_DATA_LEAGUES = ['MLB']
+const REAL_DATA_LEAGUES = ['MLB', 'WNBA']
 
 // Never show a real-data chart on a tiny sample. Hide it until we have enough.
 const MIN_REAL_GAMES = 10
