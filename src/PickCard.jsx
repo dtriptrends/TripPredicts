@@ -25,6 +25,7 @@ function tierOf(c) { return c >= 90 ? 'gold' : c >= 75 ? 'high' : 'regular' }
 // we cannot map the stat, so the UI hides the hit-rate instead of guessing.
 function bdlStatValue(league, g, propLabel) {
   const p = String(propLabel || '').toLowerCase()
+  if (p.includes('fantasy')) return null // weighted formula we can't verify; skip, don't fake
 
   if (league === 'WNBA') {
     const pts = +g.pts || 0, reb = +g.reb || 0, ast = +g.ast || 0
@@ -66,6 +67,7 @@ function bdlStatValue(league, g, propLabel) {
   if (league === 'MLB') {
     // pitcher props first, identified by pitch / allowed / earned run wording
     if (p.includes('pitch') || p.includes('allowed') || p.includes('earned run')) {
+      if (p.includes('pitches thrown') || p.includes('pitch count')) return +g.pitch_count || 0
       if (p.includes('strikeout') || p.includes('strike out')) return +g.p_k || 0
       if (p.includes('hit')) return +g.p_hits || 0
       if (p.includes('earned run')) return +g.er || 0
