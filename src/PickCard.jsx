@@ -18,7 +18,7 @@ function mapScope(label) {
   return 1
 }
 
-function tierOf(c) { return c >= 90 ? 'gold' : c >= 75 ? 'high' : 'regular' }
+function tierOf(c) { return c >= 80 ? 'gold' : c >= 65 ? 'high' : 'regular' }
 
 // Map a PrizePicks prop label to the real stat value for one game row.
 // Combos (PRA, H+R+RBI, etc.) are computed from base fields. Returns null when

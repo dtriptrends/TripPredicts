@@ -777,10 +777,12 @@ app.post('/gold', async (req, res) => {
     const REAL = ['MLB', 'WNBA']
     let picks = []
 
-    // Gold from real data: the strongest verified plays on MLB/WNBA.
+    // Gold from real data: strongest verified plays. WNBA gets a slightly lower
+    // floor (70) since its slates are smaller and single-player lines can be sparse.
     const scanLgs = reqLeague ? (REAL.includes(reqLeague) ? [reqLeague] : []) : REAL
     for (const lg of scanLgs) {
-      picks = picks.concat(await realScan(rawLines, lg, REAL_GOLD_MIN, 2))
+      const floor = lg === 'WNBA' ? 70 : REAL_GOLD_MIN
+      picks = picks.concat(await realScan(rawLines, lg, floor, 2))
     }
 
     // AI gold for sports without real data (MLB/WNBA excluded so no blind guesses).
