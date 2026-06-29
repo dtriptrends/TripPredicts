@@ -434,6 +434,124 @@ app.post('/stripe/create-checkout', async (req, res) => {
   }
 })
 
+// Server-side copy of the card's stat mapping (MLB + WNBA only), kept in sync
+// so the grounded confidence equals the hit rate the card draws.
+function bdlStatValueServer(league, g, propLabel) {
+  const p = String(propLabel || '').toLowerCase()
+
+  if (league === 'WNBA') {
+    const pts = +g.pts || 0, reb = +g.reb || 0, ast = +g.ast || 0
+    const stl = +g.stl || 0, blk = +g.blk || 0
+    const oreb = +g.oreb || 0, dreb = +g.dreb || 0
+    const fg3m = +g.fg3m || 0, fg3a = +g.fg3a || 0
+    const fgm = +g.fgm || 0, fga = +g.fga || 0
+    const ftm = +g.ftm || 0, fta = +g.fta || 0
+    const tov = +g.turnover || 0, pf = +g.pf || 0
+    const isAtt = p.includes('attempt')
+    const hasPts = p.includes('point') || p.includes('pts')
+    const hasReb = p.includes('rebound') || p.includes('reb')
+    const hasAst = p.includes('assist') || p.includes('ast')
+    if (hasPts && hasReb && hasAst) return pts + reb + ast
+    if (hasPts && hasReb) return pts + reb
+    if (hasPts && hasAst) return pts + ast
+    if (hasReb && hasAst) return reb + ast
+    if ((p.includes('blk') || p.includes('block')) && (p.includes('stl') || p.includes('steal'))) return blk + stl
+    if (p.includes('three') || p.includes('3-pt') || p.includes('3pt') || p.includes('3 pt') || p.includes('3-point')) return isAtt ? fg3a : fg3m
+    if (p.includes('free throw')) return isAtt ? fta : ftm
+    if (p.includes('field goal') || (p.includes('fg') && !p.includes('fg3'))) return isAtt ? fga : fgm
+    if (p.includes('offensive') && hasReb) return oreb
+    if (p.includes('defensive') && hasReb) return dreb
+    if (p.includes('turnover')) return tov
+    if (p.includes('foul')) return pf
+    if (p.includes('steal')) return stl
+    if (p.includes('block')) return blk
+    if (hasReb) return reb
+    if (hasAst) return ast
+    if (hasPts) return pts
+    return null
+  }
+
+  if (league === 'MLB') {
+    if (p.includes('pitch') || p.includes('allowed') || p.includes('earned run')) {
+      if (p.includes('strikeout') || p.includes('strike out')) return +g.p_k || 0
+      if (p.includes('hit')) return +g.p_hits || 0
+      if (p.includes('earned run')) return +g.er || 0
+      if (p.includes('walk')) return +g.p_bb || 0
+      if (p.includes('out')) return +g.pitching_outs || 0
+      return null
+    }
+    const hits = +g.hits || 0, runs = +g.runs || 0, rbi = +g.rbi || 0
+    const hr = +g.hr || 0, doubles = +g.doubles || 0, triples = +g.triples || 0
+    if (p.includes('hits') && p.includes('runs') && p.includes('rbi')) return hits + runs + rbi
+    if (p.includes('total base')) return +g.total_bases || 0
+    if (p.includes('home run')) return hr
+    if (p.includes('stolen')) return +g.stolen_bases || 0
+    if (p.includes('single')) return Math.max(0, hits - doubles - triples - hr)
+    if (p.includes('double')) return doubles
+    if (p.includes('triple')) return triples
+    if (p.includes('walk')) return +g.bb || 0
+    if (p.includes('rbi')) return rbi
+    if (p.includes('run')) return runs
+    if (p.includes('strikeout') || p === 'k') return +g.k || 0
+    if (p.includes('at bat') || p.includes('at-bat')) return +g.at_bats || 0
+    if (p.includes('hit')) return hits
+    return null
+  }
+
+  return null
+}
+
+// Cached gamelog fetch shared by the route and the grounding step.
+async function getGamelog(player, lg) {
+  const sport = BDL_SPORTS[lg]
+  if (!sport || !sport.supported) return { games: [] }
+  const cacheKey = `${lg}|${player.trim().toLowerCase()}`
+  const cached = gamelogCache[cacheKey]
+  if (cached && Date.now() - cached.ts < GAMELOG_TTL) return cached.data
+  let payload
+  if (sport.kind === 'lol') payload = await lolGamelog(player, lg)
+  else if (sport.kind === 'cs') payload = await csGamelog(player, lg)
+  else payload = await ballGamelog(player, lg, sport)
+  gamelogCache[cacheKey] = { data: payload, ts: Date.now() }
+  return payload
+}
+
+// The fix for AI direction contradicting the data. For MLB/WNBA picks with a
+// real sample, the direction and confidence come from the game logs, not the
+// AI's blind guess. We bet the side the player actually hits more often, and
+// the confidence IS the real hit rate. Picks with fewer than 10 games are left
+// alone (the card hides their chart anyway).
+const REAL_GROUND_LEAGUES = ['MLB', 'WNBA']
+async function groundPicks(picks) {
+  await Promise.all(picks.map(async p => {
+    const lg = (p.league || '').toUpperCase()
+    if (!REAL_GROUND_LEAGUES.includes(lg)) return
+    try {
+      const L = parseFloat(p.val)
+      if (isNaN(L)) return
+      const gl = await getGamelog(p.name, lg)
+      const vals = ((gl && gl.games) || [])
+        .map(g => bdlStatValueServer(lg, g, p.stat))
+        .filter(v => v != null && !isNaN(v))
+      if (vals.length < 10) return
+      const over = vals.filter(v => v > L).length
+      const under = vals.filter(v => v < L).length
+      const total = vals.length
+      const dir = over >= under ? 'HIGHER' : 'LOWER'
+      const hit = dir === 'HIGHER' ? over : under
+      const pct = Math.round((hit / total) * 100)
+      p.dir = dir
+      p.conf = pct
+      p.realHit = hit
+      p.realTotal = total
+      p.record = `${hit} of last ${total} games cleared this line`
+      p.bull = `Real game logs back the ${dir === 'HIGHER' ? 'over' : 'under'} here. The line was cleared in ${hit} of the last ${total} games (${pct}%).`
+      p.bear = `This is the last ${total} games only. A tough matchup, a lineup or rotation change, or a short rest day could move it.`
+    } catch (e) { /* leave the pick untouched on any error */ }
+  }))
+  return picks
+}
+
 app.post('/picks', async (req, res) => {
   try {
     const { currentTime, lines: rawLines, league, count = 6 } = req.body
@@ -493,7 +611,7 @@ Rules:
     const end = textBlock.text.lastIndexOf(']')
     if (start === -1 || end === -1) throw new Error('Please retry in a moment.')
 
-    const picks = validateLines(dedupe(normalizePicks(JSON.parse(textBlock.text.slice(start, end + 1)))), rawLines)
+    const picks = await groundPicks(validateLines(dedupe(normalizePicks(JSON.parse(textBlock.text.slice(start, end + 1)))), rawLines))
     console.log('Got', picks.length, 'picks')
     res.json({ picks })
   } catch (e) {
@@ -561,7 +679,8 @@ Rules:
     if (start === -1 || end === -1) return res.json({ picks: [] })
 
     const parsed = JSON.parse(textBlock.text.slice(start, end + 1))
-    const picks = validateLines(dedupe(normalizePicks(parsed)), rawLines).filter(p => p.conf >= 90)
+    const grounded = await groundPicks(validateLines(dedupe(normalizePicks(parsed)), rawLines))
+    const picks = grounded.filter(p => p.conf >= 90)
     console.log('Got', picks.length, 'gold picks')
     res.json({ picks })
   } catch (e) {
