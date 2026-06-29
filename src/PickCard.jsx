@@ -35,7 +35,7 @@ function bdlStatValue(league, g, propLabel) {
     const fgm = +g.fgm || 0, fga = +g.fga || 0
     const ftm = +g.ftm || 0, fta = +g.fta || 0
     const tov = +g.turnover || 0, pf = +g.pf || 0
-    const isAtt = p.includes('attempt')
+    const isAtt = p.includes('attempt') || /\b(3pta|fga|fta|pta)\b/.test(p)
     const hasPts = p.includes('point') || p.includes('pts')
     const hasReb = p.includes('rebound') || p.includes('reb')
     const hasAst = p.includes('assist') || p.includes('ast')
@@ -49,7 +49,7 @@ function bdlStatValue(league, g, propLabel) {
 
     // shooting (check three before fg so "3-pt" never falls into fg)
     if (p.includes('three') || p.includes('3-pt') || p.includes('3pt') || p.includes('3 pt') || p.includes('3-point')) return isAtt ? fg3a : fg3m
-    if (p.includes('free throw')) return isAtt ? fta : ftm
+    if (p.includes('free throw') || /\bft[ma]\b/.test(p)) return isAtt ? fta : ftm
     if (p.includes('field goal') || (p.includes('fg') && !p.includes('fg3'))) return isAtt ? fga : fgm
 
     if (p.includes('offensive') && hasReb) return oreb

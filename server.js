@@ -448,7 +448,7 @@ function bdlStatValueServer(league, g, propLabel) {
     const fgm = +g.fgm || 0, fga = +g.fga || 0
     const ftm = +g.ftm || 0, fta = +g.fta || 0
     const tov = +g.turnover || 0, pf = +g.pf || 0
-    const isAtt = p.includes('attempt')
+    const isAtt = p.includes('attempt') || /\b(3pta|fga|fta|pta)\b/.test(p)
     const hasPts = p.includes('point') || p.includes('pts')
     const hasReb = p.includes('rebound') || p.includes('reb')
     const hasAst = p.includes('assist') || p.includes('ast')
@@ -458,7 +458,7 @@ function bdlStatValueServer(league, g, propLabel) {
     if (hasReb && hasAst) return reb + ast
     if ((p.includes('blk') || p.includes('block')) && (p.includes('stl') || p.includes('steal'))) return blk + stl
     if (p.includes('three') || p.includes('3-pt') || p.includes('3pt') || p.includes('3 pt') || p.includes('3-point')) return isAtt ? fg3a : fg3m
-    if (p.includes('free throw')) return isAtt ? fta : ftm
+    if (p.includes('free throw') || /\bft[ma]\b/.test(p)) return isAtt ? fta : ftm
     if (p.includes('field goal') || (p.includes('fg') && !p.includes('fg3'))) return isAtt ? fga : fgm
     if (p.includes('offensive') && hasReb) return oreb
     if (p.includes('defensive') && hasReb) return dreb
@@ -608,7 +608,8 @@ async function realScan(lines, league, floorPct, maxPerPlayer = 2, maxTotal = 20
   const lg = league.toUpperCase()
   const cands = (lines || []).filter(l =>
     (l.league || '').toUpperCase() === lg && l.name && l.stat && l.line != null &&
-    (!l.oddsType || l.oddsType === 'standard'))
+    (!l.oddsType || l.oddsType === 'standard') &&
+    !l.name.includes('+'))  // combo props (two players) can't be verified from one game log
   if (!cands.length) return []
 
   const byPlayer = {}
@@ -637,7 +638,7 @@ async function realScan(lines, league, floorPct, maxPerPlayer = 2, maxTotal = 20
         const dir = over >= under ? 'HIGHER' : 'LOWER'
         const hit = dir === 'HIGHER' ? over : under
         const pct = Math.round((hit / total) * 100)
-        if (pct < floorPct) continue
+        if (pct < floorPct || pct >= 100) continue // 100% over a full sample means a bad line match, not a lock
         picks.push(buildRealPick(l, lg, dir, hit, total, pct))
       }
       picks.sort((a, b) => b.conf - a.conf)
