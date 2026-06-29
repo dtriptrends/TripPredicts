@@ -25,7 +25,7 @@ function tierOf(c) { return c >= 90 ? 'gold' : c >= 75 ? 'high' : 'regular' }
 // we cannot map the stat, so the UI hides the hit-rate instead of guessing.
 function bdlStatValue(league, g, propLabel) {
   const p = String(propLabel || '').toLowerCase()
-  if (p.includes('fantasy')) return null // weighted formula we can't verify; skip, don't fake
+  if (p.includes('fantasy') || /\bfs\b/.test(p)) return null // weighted formula we can't verify; skip, don't fake
 
   if (league === 'WNBA') {
     const pts = +g.pts || 0, reb = +g.reb || 0, ast = +g.ast || 0
@@ -150,31 +150,6 @@ function MiniChart({ real }) {
   )
 }
 
-// Green goblin (safer, lower line) or red demon (harder, higher line) flag.
-// Only rendered when real game data says the alternate line is worth it.
-function VariantChip({ variant }) {
-  const demon = variant.type === 'demon'
-  return (
-    <span
-      title={demon
-        ? `Demon line ${variant.line} still cleared in ${variant.pct}% of recent games — bigger payout`
-        : `Goblin line ${variant.line} cleared in ${variant.pct}% of recent games — safer play`}
-      style={{
-        display: 'inline-flex', alignItems: 'center', gap: '3px',
-        fontFamily: "'Barlow Condensed',sans-serif", fontSize: '9px', fontWeight: 700,
-        letterSpacing: '0.5px', textTransform: 'uppercase',
-        padding: '2px 6px', borderRadius: '7px', whiteSpace: 'nowrap',
-        background: demon ? 'rgba(239,68,68,0.16)' : 'rgba(21,214,143,0.16)',
-        color: demon ? '#ff6b6b' : '#15d68f',
-        border: `1px solid ${demon ? 'rgba(239,68,68,0.4)' : 'rgba(21,214,143,0.4)'}`,
-      }}
-    >
-      <span style={{ fontSize: '10px' }}>{demon ? '👹' : '👺'}</span>
-      {demon ? 'Demon' : 'Goblin'} {variant.line} · {variant.pct}%
-    </span>
-  )
-}
-
 const LEAGUE_COLORS = {
   'NBA':      { bg: 'rgba(225,114,16,0.15)',  color: '#e17210', border: 'rgba(225,114,16,0.3)' },
   'MLB':      { bg: 'rgba(74,144,217,0.12)',  color: '#4a90d9', border: 'rgba(74,144,217,0.3)' },
@@ -295,23 +270,6 @@ export default function PickCard({ pick, delay = 0 }) {
   // line / mapCount. Ball sports compare against the line directly.
   const effLine = isEsport ? (parseFloat(pick.val) / mapCount) : pick.val
   const real = useMemo(() => rateFor(effLine), [gameVals, effLine, up])
-
-  // Flag the goblin (safer/lower) or demon (harder/higher) line, but only when
-  // the real data earns it: goblin near-automatic, or demon still live.
-  const GOBLIN_LOCK = 80, DEMON_LIVE = 50
-  const variant = useMemo(() => {
-    if (!real || real.total < MIN_REAL_GAMES || !pick.altLines || isEsport) return null
-    const dL = pick.altLines.demon, gL = pick.altLines.goblin
-    if (dL != null && dL !== real.line) {
-      const dr = rateFor(dL)
-      if (dr && dr.pct >= DEMON_LIVE) return { type: 'demon', line: dL, pct: dr.pct }
-    }
-    if (gL != null && gL !== real.line) {
-      const gr = rateFor(gL)
-      if (gr && gr.pct >= GOBLIN_LOCK) return { type: 'goblin', line: gL, pct: gr.pct }
-    }
-    return null
-  }, [real, pick.altLines, gameVals, up])
 
   const pctColor = real ? (real.pct >= 66 ? '#15d68f' : real.pct >= 40 ? '#f5c842' : '#ef4444') : '#7a8aaa'
 
@@ -523,7 +481,6 @@ export default function PickCard({ pick, delay = 0 }) {
               <div style={{ fontSize: '11px', color: '#7a8aaa' }}>{pick.stat}</div>
               <div style={{ display: 'flex', alignItems: 'center', gap: '7px', flexWrap: 'wrap' }}>
                 <div style={{ fontFamily: "'Barlow Condensed',sans-serif", fontSize: '17px', fontWeight: 700, color: '#eef2ff', lineHeight: 1 }}>{pick.val}</div>
-                {variant && <VariantChip variant={variant} />}
               </div>
             </div>
             <div style={{

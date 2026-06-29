@@ -438,7 +438,7 @@ app.post('/stripe/create-checkout', async (req, res) => {
 // so the grounded confidence equals the hit rate the card draws.
 function bdlStatValueServer(league, g, propLabel) {
   const p = String(propLabel || '').toLowerCase()
-  if (p.includes('fantasy')) return null // weighted formula we can't verify; skip, don't fake
+  if (p.includes('fantasy') || /\bfs\b/.test(p)) return null // weighted formula we can't verify; skip, don't fake
 
   if (league === 'WNBA') {
     const pts = +g.pts || 0, reb = +g.reb || 0, ast = +g.ast || 0
