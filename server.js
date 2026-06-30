@@ -569,7 +569,15 @@ async function mapLimit(items, limit, fn) {
 
 // Gold floor for real-data leagues. Tunable: 90 is strict, 80 gives more volume
 // while still meaning a strong real hit rate.
-const REAL_GOLD_MIN = 80
+// Gold floor for real-data leagues. WNBA gets a lower bar than MLB since its
+// slates are smaller and harder to clear a strict number on. This single
+// function is the ONLY source of truth, used by the scanner, the AI fallback,
+// and the final gate, so the three can never disagree again.
+function goldFloorFor(lg) {
+  if (lg === 'WNBA') return 70
+  if (lg === 'MLB') return 80
+  return 90
+}
 
 // Build a frontend-shaped pick straight from real game-log math.
 function buildRealPick(l, lg, dir, hit, total, pct) {
@@ -638,7 +646,12 @@ async function realScan(lines, league, floorPct, maxPerPlayer = 2, maxTotal = 20
         const dir = over >= under ? 'HIGHER' : 'LOWER'
         const hit = dir === 'HIGHER' ? over : under
         const pct = Math.round((hit / total) * 100)
-        if (pct < floorPct || pct >= 100) continue // 100% over a full sample means a bad line match, not a lock
+        if (pct < floorPct) continue
+        // A perfect read is only suspicious if it came from a bug. Combo props
+        // (two players) and fantasy scores, the two things that used to fake a
+        // 100%, are already excluded above and in bdlStatValueServer. A single,
+        // correctly-mapped stat genuinely clearing every game (common on low
+        // MLB lines like Hits 0.5) is real evidence, not an error.
         picks.push(buildRealPick(l, lg, dir, hit, total, pct))
       }
       picks.sort((a, b) => b.conf - a.conf)
@@ -792,7 +805,7 @@ app.post('/gold', async (req, res) => {
     // floor (70) since its slates are smaller and single-player lines can be sparse.
     const scanLgs = reqLeague ? (REAL.includes(reqLeague) ? [reqLeague] : []) : REAL
     for (const lg of scanLgs) {
-      const floor = lg === 'WNBA' ? 70 : REAL_GOLD_MIN
+      const floor = goldFloorFor(lg)
       const scanned = await realScan(rawLines, lg, floor, 2)
       picks = picks.concat(scanned)
       // If real scanner came back empty for WNBA (e.g. all combo props tonight),
@@ -801,7 +814,7 @@ app.post('/gold', async (req, res) => {
         const wnbaLines = rawLines.filter(l => (l.league || '').toUpperCase() === 'WNBA')
         if (wnbaLines.length > 0) {
           const wnbaAI = await aiPicks(currentTime, wnbaLines, 'WNBA', rawLines, 'gold')
-          picks = picks.concat(wnbaAI.filter(p => p.conf >= REAL_GOLD_MIN))
+          picks = picks.concat(wnbaAI.filter(p => p.conf >= goldFloorFor('WNBA')))
           console.log('WNBA real scanner empty — used AI fallback, got', wnbaAI.length, 'picks')
         }
       }
@@ -816,11 +829,7 @@ app.post('/gold', async (req, res) => {
     }
 
     // Final gate: every pick must clear its floor regardless of how it got here.
-    picks = picks.filter(p => {
-      const lg = (p.league || '').toUpperCase()
-      const isReal = REAL.includes(lg)
-      return isReal ? p.conf >= REAL_GOLD_MIN : p.conf >= 90
-    })
+    picks = picks.filter(p => p.conf >= goldFloorFor((p.league || '').toUpperCase()))
 
     picks.sort((a, b) => b.conf - a.conf)
     picks = picks.slice(0, 30)
