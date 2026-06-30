@@ -746,7 +746,18 @@ app.post('/picks', async (req, res) => {
     // Real-data scanner for MLB/WNBA (lower floor than gold so the board has range).
     const scanLgs = reqLeague ? (REAL.includes(reqLeague) ? [reqLeague] : []) : REAL
     for (const lg of scanLgs) {
-      picks = picks.concat(await realScan(rawLines, lg, 60, 2, 15))
+      const scanned = await realScan(rawLines, lg, 60, 2, 15)
+      picks = picks.concat(scanned)
+      // If WNBA real scanner is empty (e.g. all combo props), fall through to AI
+      // so the board still has WNBA cards.
+      if (lg === 'WNBA' && scanned.length === 0) {
+        const wnbaLines = rawLines.filter(l => (l.league || '').toUpperCase() === 'WNBA')
+        if (wnbaLines.length > 0) {
+          const wnbaAI = await aiPicks(currentTime, wnbaLines, 'WNBA', rawLines, 'tonight', pickCount)
+          picks = picks.concat(wnbaAI)
+          console.log('WNBA real scanner empty — AI fallback, got', wnbaAI.length, 'picks')
+        }
+      }
     }
 
     // AI for everything else. Exclude MLB/WNBA so the AI never guesses them.
@@ -782,7 +793,18 @@ app.post('/gold', async (req, res) => {
     const scanLgs = reqLeague ? (REAL.includes(reqLeague) ? [reqLeague] : []) : REAL
     for (const lg of scanLgs) {
       const floor = lg === 'WNBA' ? 70 : REAL_GOLD_MIN
-      picks = picks.concat(await realScan(rawLines, lg, floor, 2))
+      const scanned = await realScan(rawLines, lg, floor, 2)
+      picks = picks.concat(scanned)
+      // If real scanner came back empty for WNBA (e.g. all combo props tonight),
+      // fall back to AI so the board isn't blank.
+      if (lg === 'WNBA' && scanned.length === 0) {
+        const wnbaLines = rawLines.filter(l => (l.league || '').toUpperCase() === 'WNBA')
+        if (wnbaLines.length > 0) {
+          const wnbaAI = await aiPicks(currentTime, wnbaLines, 'WNBA', rawLines, 'gold')
+          picks = picks.concat(wnbaAI)
+          console.log('WNBA real scanner empty — used AI fallback, got', wnbaAI.length, 'picks')
+        }
+      }
     }
 
     // AI gold for sports without real data (MLB/WNBA excluded so no blind guesses).
