@@ -728,7 +728,7 @@ Rules:
   let parsed
   try { parsed = JSON.parse(textBlock.text.slice(start, end + 1)) } catch (e) { return [] }
   const grounded = await groundPicks(validateLines(dedupe(normalizePicks(parsed)), rawLines))
-  return gold ? grounded.filter(p => p.conf >= 90) : grounded
+  return grounded
 }
 
 app.post('/picks', async (req, res) => {
@@ -801,7 +801,7 @@ app.post('/gold', async (req, res) => {
         const wnbaLines = rawLines.filter(l => (l.league || '').toUpperCase() === 'WNBA')
         if (wnbaLines.length > 0) {
           const wnbaAI = await aiPicks(currentTime, wnbaLines, 'WNBA', rawLines, 'gold')
-          picks = picks.concat(wnbaAI)
+          picks = picks.concat(wnbaAI.filter(p => p.conf >= REAL_GOLD_MIN))
           console.log('WNBA real scanner empty — used AI fallback, got', wnbaAI.length, 'picks')
         }
       }
@@ -811,8 +811,16 @@ app.post('/gold', async (req, res) => {
     const doAI = reqLeague ? !REAL.includes(reqLeague) : true
     if (doAI) {
       const aiLines = reqLeague ? lines : lines.filter(l => !REAL.includes((l.league || '').toUpperCase()))
-      picks = picks.concat(await aiPicks(currentTime, aiLines, reqLeague, rawLines, 'gold'))
+      const aiGold = await aiPicks(currentTime, aiLines, reqLeague, rawLines, 'gold')
+      picks = picks.concat(aiGold.filter(p => p.conf >= 90)) // non-real sports keep the 90% bar
     }
+
+    // Final gate: every pick must clear its floor regardless of how it got here.
+    picks = picks.filter(p => {
+      const lg = (p.league || '').toUpperCase()
+      const isReal = REAL.includes(lg)
+      return isReal ? p.conf >= REAL_GOLD_MIN : p.conf >= 90
+    })
 
     picks.sort((a, b) => b.conf - a.conf)
     picks = picks.slice(0, 30)

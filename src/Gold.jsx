@@ -37,7 +37,7 @@ const STEP_LABELS = [
 
 const FACTS = [
   'Gold picks are the rarest plays on the board. Most sessions only have 1 or 2.',
-  'The bar for gold is 90% confidence or higher. No exceptions, no rounding up.',
+  'The bar for gold is 80%+ confidence. 90%+ for non-real-data sports.',
   'Over 250 live props are scanned every load to find the few that truly qualify.',
   'When gold picks hit they carry real conviction behind every number.',
   'Hot streak plus weak opponent plus high usage is the gold formula.',
@@ -172,7 +172,7 @@ export default function Gold() {
           ★ GOLD PICKS
         </div>
         <div style={{ fontSize: '14px', color: 'var(--text2)', maxWidth: '320px', lineHeight: 1.6, marginBottom: '16px' }}>
-          Unlock every gold pick across all sports. 90%+ confidence plays, the full board, updated live.
+          Unlock every gold pick across all sports. 80%+ confidence plays, the full board, updated live.
         </div>
         <div style={{ fontFamily: 'var(--font-d)', fontSize: '40px', letterSpacing: '1px', color: '#f5c842', marginBottom: '4px', lineHeight: 1 }}>
           $25<span style={{ fontSize: '18px', color: 'var(--text2)' }}>/month</span>
@@ -326,7 +326,7 @@ function GoldContent() {
       <div style={{ padding: '18px 20px 0', display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', flexShrink: 0 }}>
         <div>
           <div style={{ fontFamily: 'var(--font-d)', fontSize: '28px', letterSpacing: '2px', lineHeight: 1, background: 'linear-gradient(90deg,#d4a017,#f5c842,#fff0a0)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>★ GOLD PICKS</div>
-          <div style={{ fontSize: '11px', color: 'var(--text2)', marginTop: '3px' }}>90%+ confidence · Strongest plays available right now</div>
+          <div style={{ fontSize: '11px', color: 'var(--text2)', marginTop: '3px' }}>80%+ confidence · Strongest verified plays right now</div>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
           {!isLoading && <button onClick={handleRefresh} style={{ background: 'none', border: '1px solid var(--border2)', color: 'var(--text2)', fontFamily: 'var(--font)', fontSize: '11px', padding: '5px 12px', borderRadius: '20px', cursor: 'pointer', letterSpacing: '1px' }}>Refresh</button>}
@@ -420,7 +420,7 @@ function GoldContent() {
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '16px' }}>
             <span style={{ fontFamily: 'var(--font-d)', fontSize: '16px', letterSpacing: '2px', color: '#f5c842' }}>★ GOLD — {selectedLeague}</span>
             <div style={{ flex: 1, height: '1px', background: 'rgba(245,200,66,0.2)' }} />
-            <span style={{ fontSize: '11px', color: 'var(--text3)' }}>{currentPicks.length} pick{currentPicks.length !== 1 ? 's' : ''} · 90%+</span>
+            <span style={{ fontSize: '11px', color: 'var(--text3)' }}>{currentPicks.length} pick{currentPicks.length !== 1 ? 's' : ''} · 80%+</span>
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(170px, 1fr))', gap: '14px' }}>
             {currentPicks.map((p, i) => <PickCard key={p.id} pick={p} delay={i * 60} />)}
