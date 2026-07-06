@@ -2,6 +2,28 @@ import React, { useState, useEffect, useMemo } from 'react'
 
 const SERVER = 'https://trippredicts-production-cfad.up.railway.app'
 
+// ============ SIGNAL design tokens ============
+// Near-black terminal base, one signature amber accent for verified data and
+// gold tier, a separate cool accent reserved only for the user's own parlay
+// selections so it never gets confused with "the data says this is strong."
+const INK       = '#F1EEE6'
+const INK_DIM   = '#9AA0AB'
+const INK_FAINT = '#565A66'
+const PANEL     = 'rgba(16,18,24,0.92)'
+const PANEL_GOLD = 'linear-gradient(180deg,#12141b 55%,#1c1608 100%)'
+const IMG_BG    = '#0B0D12'
+const LINE_SOFT = 'rgba(255,255,255,0.07)'
+const AMBER      = '#E3A548'
+const AMBER_DIM  = 'rgba(227,165,72,0.14)'
+const AMBER_MED  = 'rgba(227,165,72,0.4)'
+const PULSE_BLUE = '#4FC3F7'
+const GOOD = '#3DDD8F'
+const BAD  = '#F2555F'
+
+const FONT_D = "'Space Grotesk',sans-serif"
+const FONT_M = "'IBM Plex Mono',monospace"
+const FONT_B = "'Barlow',sans-serif"
+
 // Sports with real game-by-game data wired in (BALLDONTLIE).
 const REAL_DATA_LEAGUES = ['MLB', 'WNBA']
 
@@ -127,25 +149,44 @@ function fmtDate(d) {
   return `${dt.getMonth() + 1}/${dt.getDate()}`
 }
 
-// Honest last-N bar chart. Cleared games are green, missed are red, with a
-// dashed marker at the prop line. Most recent game sits on the right.
+// Honest last-N bar chart. Cleared games are green, missed are red, with an
+// amber dashed marker at the prop line. Most recent game sits on the right.
 function MiniChart({ real }) {
   const ordered = [...real.rows].reverse()
   const maxV = Math.max(real.line, ...ordered.map(r => r.value)) || 1
   const H = 42
   return (
     <div style={{ position: 'relative', display: 'flex', alignItems: 'flex-end', gap: '2px', height: `${H}px`, marginTop: '7px' }}>
-      <div style={{ position: 'absolute', left: 0, right: 0, bottom: `${(real.line / maxV) * H}px`, borderTop: '1px dashed rgba(245,200,66,0.65)', zIndex: 2 }} />
+      <div style={{ position: 'absolute', left: 0, right: 0, bottom: `${(real.line / maxV) * H}px`, borderTop: `1px dashed ${AMBER_MED}`, zIndex: 2 }} />
       {ordered.map((r, i) => {
         const h = Math.max(3, (r.value / maxV) * H)
         return (
           <div key={i} title={`${fmtDate(r.date)}: ${r.value}`} style={{
             flex: 1, height: `${h}px`, borderRadius: '2px 2px 0 0',
-            background: r.cleared ? 'linear-gradient(180deg,#15d68f,#0a7d5a)' : 'linear-gradient(180deg,#ef4444,#7d2a2a)',
-            boxShadow: r.cleared ? '0 0 6px rgba(21,214,143,0.45)' : 'none',
+            background: r.cleared ? `linear-gradient(180deg,${GOOD},#1c8f5c)` : `linear-gradient(180deg,${BAD},#7d2530)`,
+            boxShadow: r.cleared ? '0 0 6px rgba(61,221,143,0.4)' : 'none',
           }} />
         )
       })}
+    </div>
+  )
+}
+
+// Signature element: a stepped signal-strength meter standing in for a plain
+// progress bar. Reads like a real measurement, not a marketing gauge.
+function SignalMeter({ pct, color, segments = 12 }) {
+  const filled = Math.round((pct / 100) * segments)
+  return (
+    <div style={{ display: 'flex', gap: '2px', height: '16px', alignItems: 'flex-end' }}>
+      {Array.from({ length: segments }).map((_, i) => (
+        <div key={i} style={{
+          flex: 1,
+          height: `${28 + (i / (segments - 1)) * 72}%`,
+          borderRadius: '1px',
+          background: i < filled ? color : 'rgba(255,255,255,0.09)',
+          transition: 'background 0.5s ease',
+        }} />
+      ))}
     </div>
   )
 }
@@ -155,43 +196,12 @@ const LEAGUE_COLORS = {
   'MLB':      { bg: 'rgba(74,144,217,0.12)',  color: '#4a90d9', border: 'rgba(74,144,217,0.3)' },
   'NHL':      { bg: 'rgba(255,255,255,0.08)', color: '#aab4cc', border: 'rgba(255,255,255,0.15)' },
   'NFL':      { bg: 'rgba(74,144,217,0.12)',  color: '#4a90d9', border: 'rgba(74,144,217,0.3)' },
-  'WNBA':     { bg: 'rgba(255,105,0,0.12)',   color: '#ff6900', border: 'rgba(255,105,0,0.25)' },
+  'WNBA':     { bg: 'rgba(227,165,72,0.14)',  color: '#E3A548', border: 'rgba(227,165,72,0.3)' },
   'CS2':      { bg: 'rgba(0,180,216,0.12)',   color: '#00b4d8', border: 'rgba(0,180,216,0.25)' },
   'LOL':      { bg: 'rgba(200,155,60,0.12)',  color: '#c89b3c', border: 'rgba(200,155,60,0.25)' },
   'VALORANT': { bg: 'rgba(255,70,85,0.12)',   color: '#ff4655', border: 'rgba(255,70,85,0.25)' },
   'COD':      { bg: 'rgba(0,230,118,0.12)',   color: '#00e676', border: 'rgba(0,230,118,0.25)' },
 }
-
-const BOTTOM_FLAMES = [
-  { left: '3%',  w: 14, h: 36, dur: '0.55s', delay: '0.00s', type: 0 },
-  { left: '12%', w: 20, h: 52, dur: '0.80s', delay: '0.09s', type: 1 },
-  { left: '23%', w: 12, h: 28, dur: '0.48s', delay: '0.04s', type: 2 },
-  { left: '33%', w: 22, h: 58, dur: '0.72s', delay: '0.16s', type: 0 },
-  { left: '44%', w: 16, h: 42, dur: '0.60s', delay: '0.07s', type: 1 },
-  { left: '55%', w: 24, h: 60, dur: '0.88s', delay: '0.13s', type: 2 },
-  { left: '66%', w: 14, h: 32, dur: '0.62s', delay: '0.03s', type: 0 },
-  { left: '76%', w: 20, h: 46, dur: '0.76s', delay: '0.11s', type: 1 },
-  { left: '86%', w: 16, h: 38, dur: '0.50s', delay: '0.06s', type: 2 },
-  { left: '93%', w: 12, h: 26, dur: '0.65s', delay: '0.14s', type: 0 },
-]
-
-const LEFT_FLAMES = [
-  { bottom: '20%', w: 12, h: 30, dur: '0.58s', delay: '0.05s', type: 1 },
-  { bottom: '45%', w: 10, h: 24, dur: '0.70s', delay: '0.12s', type: 2 },
-  { bottom: '65%', w: 8,  h: 18, dur: '0.52s', delay: '0.08s', type: 0 },
-]
-
-const RIGHT_FLAMES = [
-  { bottom: '15%', w: 11, h: 28, dur: '0.62s', delay: '0.10s', type: 2 },
-  { bottom: '40%', w: 9,  h: 22, dur: '0.75s', delay: '0.04s', type: 0 },
-  { bottom: '60%', w: 8,  h: 16, dur: '0.55s', delay: '0.15s', type: 1 },
-]
-
-const FLAME_GRADIENTS = [
-  'radial-gradient(ellipse at bottom, rgba(255,20,0,0.95), rgba(255,80,0,0.55) 40%, transparent 80%)',
-  'radial-gradient(ellipse at bottom, rgba(255,80,0,0.9),  rgba(255,150,0,0.45) 42%, transparent 80%)',
-  'radial-gradient(ellipse at bottom, rgba(255,140,0,0.85),rgba(255,210,50,0.35) 45%, transparent 80%)',
-]
 
 export default function PickCard({ pick, delay = 0, selected = false, onToggleParlay = null }) {
   const [revealed, setRevealed] = useState(false)
@@ -200,7 +210,7 @@ export default function PickCard({ pick, delay = 0, selected = false, onTogglePa
   const t = tierOf(pick.conf)
   const up = pick.dir === 'HIGHER'
   const league = (pick.league || pick.sport || '').toUpperCase()
-  const lc = LEAGUE_COLORS[league] || { bg: 'rgba(255,255,255,0.06)', color: '#7a8aaa', border: 'rgba(255,255,255,0.1)' }
+  const lc = LEAGUE_COLORS[league] || { bg: 'rgba(255,255,255,0.06)', color: INK_DIM, border: 'rgba(255,255,255,0.1)' }
   const isGold = t === 'gold'
   const hasRealData = REAL_DATA_LEAGUES.includes(league)
 
@@ -238,9 +248,6 @@ export default function PickCard({ pick, delay = 0, selected = false, onTogglePa
   const isEsport = league === 'LOL' || league === 'CS2'
   const mapCount = isEsport ? mapScope(pick.stat) : 1
 
-  // per-game stat values, computed once from the real game log. For esports we
-  // reduce to a per-MAP value: LoL rows are already per map; CS2 rows are match
-  // totals, so we divide by the maps played in that match.
   const gameVals = useMemo(() => {
     if (!gamelog || !gamelog.games || !gamelog.games.length) return null
     const arr = []
@@ -256,7 +263,6 @@ export default function PickCard({ pick, delay = 0, selected = false, onTogglePa
     return arr.length ? arr : null
   }, [gamelog, league, pick.stat])
 
-  // hit-rate of clearing a line in the pick's direction
   function rateFor(lineRaw) {
     if (!gameVals) return null
     const L = parseFloat(lineRaw)
@@ -266,81 +272,21 @@ export default function PickCard({ pick, delay = 0, selected = false, onTogglePa
     return { rows, cleared, total: rows.length, line: L, pct: Math.round((cleared / rows.length) * 100) }
   }
 
-  // For esports the prop line covers mapCount maps, so the per-map target is
-  // line / mapCount. Ball sports compare against the line directly.
   const effLine = isEsport ? (parseFloat(pick.val) / mapCount) : pick.val
   const real = useMemo(() => rateFor(effLine), [gameVals, effLine, up])
 
-  const pctColor = real ? (real.pct >= 66 ? '#15d68f' : real.pct >= 40 ? '#f5c842' : '#ef4444') : '#7a8aaa'
+  const pctColor = real ? (real.pct >= 66 ? GOOD : real.pct >= 40 ? AMBER : BAD) : INK_DIM
 
-  const borderColor = selected ? '#4d9eff' : isGold ? '#b84000' : t === 'high' ? 'rgba(16,185,129,0.3)' : 'rgba(255,255,255,0.06)'
-  const confColor = isGold ? '#f5c842' : t === 'high' ? '#10b981' : '#7a8aaa'
-  const fillBg = isGold ? 'linear-gradient(90deg,#d4a017,#f5c842,#fff0a0)' : t === 'high' ? '#10b981' : '#3a4a6a'
+  const borderColor = selected ? PULSE_BLUE : isGold ? AMBER_MED : t === 'high' ? 'rgba(61,221,143,0.3)' : LINE_SOFT
+  const confColor = isGold ? AMBER : t === 'high' ? GOOD : INK_DIM
+  const meterColor = isGold ? AMBER : t === 'high' ? GOOD : INK_FAINT
 
   return (
-    <div style={{
-      position: 'relative',
-      paddingBottom: isGold ? '20px' : '0',
-      marginBottom: isGold ? '8px' : '0',
-      transform: 'translateZ(0)',
-      willChange: 'transform',
-      WebkitTransform: 'translateZ(0)',
-    }}>
-
-      {/* Outside fire — only for gold */}
-      {isGold && revealed && (
-        <>
-          <div style={{ position: 'absolute', bottom: 0, left: '-4px', right: '-4px', height: '80px', pointerEvents: 'none', zIndex: 10 }}>
-            {BOTTOM_FLAMES.map((fc, i) => (
-              <div key={i} style={{
-                position: 'absolute', bottom: 0, left: fc.left,
-                width: `${fc.w}px`, height: `${fc.h}px`,
-                background: FLAME_GRADIENTS[fc.type],
-                borderRadius: '50% 50% 20% 20%',
-                filter: 'blur(4px)',
-                animation: `flicker${fc.type} ${fc.dur} ${fc.delay} ease-in-out infinite alternate`,
-              }} />
-            ))}
-            <div style={{ position: 'absolute', bottom: 0, left: '3%', right: '3%', height: '22px', background: 'radial-gradient(ellipse at bottom, rgba(255,50,0,0.6), rgba(255,100,0,0.25) 55%, transparent 80%)', filter: 'blur(8px)' }} />
-          </div>
-
-          <div style={{ position: 'absolute', top: 0, bottom: '20px', left: '-18px', width: '28px', pointerEvents: 'none', zIndex: 10 }}>
-            {LEFT_FLAMES.map((fc, i) => (
-              <div key={i} style={{
-                position: 'absolute', left: '4px', bottom: fc.bottom,
-                width: `${fc.w}px`, height: `${fc.h}px`,
-                background: FLAME_GRADIENTS[fc.type],
-                borderRadius: '50% 50% 20% 20%',
-                filter: 'blur(4px)',
-                transform: 'rotate(-90deg)',
-                animation: `flickerSide${i % 2} ${fc.dur} ${fc.delay} ease-in-out infinite alternate`,
-              }} />
-            ))}
-          </div>
-
-          <div style={{ position: 'absolute', top: 0, bottom: '20px', right: '-18px', width: '28px', pointerEvents: 'none', zIndex: 10 }}>
-            {RIGHT_FLAMES.map((fc, i) => (
-              <div key={i} style={{
-                position: 'absolute', right: '4px', bottom: fc.bottom,
-                width: `${fc.w}px`, height: `${fc.h}px`,
-                background: FLAME_GRADIENTS[fc.type],
-                borderRadius: '50% 50% 20% 20%',
-                filter: 'blur(4px)',
-                transform: 'rotate(90deg)',
-                animation: `flickerSide${(i + 1) % 2} ${fc.dur} ${fc.delay} ease-in-out infinite alternate`,
-              }} />
-            ))}
-          </div>
-
-          <div style={{ position: 'absolute', inset: '-2px', bottom: '18px', borderRadius: '18px', pointerEvents: 'none', zIndex: 0, animation: 'outerFireGlow 2s ease infinite' }} />
-        </>
-      )}
-
-      {/* Card */}
+    <div style={{ position: 'relative', transform: 'translateZ(0)', willChange: 'transform', WebkitTransform: 'translateZ(0)' }}>
       <div style={{
-        background: isGold ? 'linear-gradient(180deg,#0d1219 60%,#190700 100%)' : 'rgba(13,18,28,0.92)',
+        background: isGold ? PANEL_GOLD : PANEL,
         border: `1px solid ${borderColor}`,
-        borderRadius: '16px',
+        borderRadius: '14px',
         overflow: 'hidden',
         position: 'relative',
         zIndex: 1,
@@ -351,108 +297,99 @@ export default function PickCard({ pick, delay = 0, selected = false, onTogglePa
           ? 'opacity 0.5s ease, transform 0.7s cubic-bezier(0.16,1,0.3,1)'
           : 'opacity 0.4s ease, transform 0.4s ease',
         boxShadow: selected
-          ? '0 0 0 2px #4d9eff, 0 0 16px rgba(77,158,255,0.35)'
-          : (revealed && isGold ? '0 0 0 1px rgba(180,40,0,0.5), inset 0 -30px 40px -10px rgba(180,30,0,0.2)' : 'none'),
+          ? `0 0 0 2px ${PULSE_BLUE}, 0 0 16px rgba(79,195,247,0.3)`
+          : (revealed && isGold ? `0 0 0 1px ${AMBER_MED}, inset 0 -24px 36px -10px rgba(227,165,72,0.1)` : 'none'),
+        animation: isGold && revealed ? 'signalAmbient 3s ease-in-out infinite' : 'none',
         backdropFilter: 'blur(8px)',
         WebkitBackdropFilter: 'blur(8px)',
       }}>
 
-        {/* Image area */}
-        <div style={{ height: '130px', background: '#0d1118', display: 'flex', alignItems: 'center', justifyContent: 'center', position: 'relative', overflow: 'hidden' }}>
+        <div style={{ height: '130px', background: IMG_BG, display: 'flex', alignItems: 'center', justifyContent: 'center', position: 'relative', overflow: 'hidden' }}>
           {pick.image
             ? <img src={pick.image} alt={pick.name} style={{ width: '100%', height: '100%', objectFit: 'cover', objectPosition: 'center top' }} />
             : <div style={{
                 width: '72px', height: '72px', borderRadius: '50%',
-                background: isGold ? 'linear-gradient(135deg,#2a1000,#180800)' : 'linear-gradient(135deg,#141c2a,#0c1018)',
-                border: isGold ? '2px solid rgba(255,100,0,0.3)' : '2px solid rgba(255,255,255,0.07)',
+                background: isGold ? 'linear-gradient(135deg,#241a05,#15100a)' : 'linear-gradient(135deg,#181c22,#0f1116)',
+                border: isGold ? `2px solid ${AMBER_MED}` : '2px solid rgba(255,255,255,0.08)',
                 display: 'flex', alignItems: 'center', justifyContent: 'center',
-                fontFamily: "'Bebas Neue',sans-serif", fontSize: '24px',
-                color: isGold ? '#f5a030' : '#7a8aaa', letterSpacing: '1px'
+                fontFamily: FONT_D, fontSize: '22px', fontWeight: 700,
+                color: isGold ? AMBER : INK_DIM, letterSpacing: '1px'
               }}>{pick.initials}</div>
           }
 
           <div style={{
             position: 'absolute', top: '8px', right: '8px',
-            fontFamily: "'Barlow Condensed',sans-serif", fontSize: '10px', fontWeight: 700,
+            fontFamily: FONT_M, fontSize: '10px', fontWeight: 600,
             letterSpacing: '1.5px', textTransform: 'uppercase',
-            padding: '3px 9px', borderRadius: '10px',
-            background: isGold ? 'linear-gradient(90deg,#b83000,#e87000)' : t === 'high' ? 'rgba(16,185,129,0.12)' : 'rgba(255,255,255,0.07)',
-            color: isGold ? '#fff' : t === 'high' ? '#10b981' : '#3a4a6a',
-            border: isGold ? '1px solid rgba(255,100,0,0.45)' : t === 'high' ? '1px solid rgba(16,185,129,0.25)' : 'none',
-            boxShadow: isGold ? '0 0 8px rgba(255,80,0,0.4)' : 'none'
-          }}>{isGold ? '🔥 GOLD' : t === 'high' ? 'HIGH' : 'PICK'}</div>
+            padding: '3px 9px', borderRadius: '5px',
+            background: isGold ? AMBER : t === 'high' ? 'rgba(61,221,143,0.12)' : 'rgba(255,255,255,0.06)',
+            color: isGold ? '#100b02' : t === 'high' ? GOOD : INK_FAINT,
+            border: isGold ? `1px solid ${AMBER}` : t === 'high' ? '1px solid rgba(61,221,143,0.25)' : 'none',
+          }}>{isGold ? '◆ GOLD' : t === 'high' ? 'HIGH' : 'PICK'}</div>
 
-          <div style={{ position: 'absolute', bottom: '7px', left: '8px', fontFamily: "'Bebas Neue',sans-serif", fontSize: '8px', letterSpacing: '1.5px', color: 'rgba(255,255,255,0.07)' }}>TRIP PREDICTS</div>
+          <div style={{ position: 'absolute', bottom: '7px', left: '8px', fontFamily: FONT_D, fontSize: '8px', fontWeight: 600, letterSpacing: '1.5px', color: 'rgba(255,255,255,0.08)' }}>TRIP PREDICTS</div>
 
           <div style={{
             position: 'absolute', bottom: '6px', right: '8px',
-            fontFamily: "'Barlow Condensed',sans-serif", fontSize: '10px', fontWeight: 700,
+            fontFamily: FONT_M, fontSize: '10px', fontWeight: 600,
             letterSpacing: '1px', textTransform: 'uppercase',
-            padding: '2px 7px', borderRadius: '6px',
+            padding: '2px 7px', borderRadius: '5px',
             background: lc.bg, color: lc.color, border: `1px solid ${lc.border}`
           }}>{league || pick.sport}</div>
 
-          {/* Real-data flag on the image, for MLB / WNBA */}
           {hasRealData && (
             <div style={{
               position: 'absolute', top: '8px', left: '8px',
-              display: 'inline-flex', alignItems: 'center', gap: '3px',
-              fontFamily: "'Barlow Condensed',sans-serif", fontSize: '9px', fontWeight: 700,
+              display: 'inline-flex', alignItems: 'center', gap: '5px',
+              fontFamily: FONT_M, fontSize: '9px', fontWeight: 600,
               letterSpacing: '1px', textTransform: 'uppercase',
-              padding: '3px 7px', borderRadius: '10px',
-              background: 'linear-gradient(90deg,#c2360a,#ff6a00)', color: '#fff',
-              border: '1px solid rgba(255,140,40,0.55)',
-              animation: 'realGlow 2.4s ease-in-out infinite',
-            }}>🔥 Real</div>
-          )}
-
-          {isGold && revealed && (
-            <div style={{ position: 'absolute', inset: 0, pointerEvents: 'none', overflow: 'hidden' }}>
-              <div style={{ position: 'absolute', top: 0, left: 0, width: '45%', height: '100%', background: 'linear-gradient(105deg,transparent,rgba(255,140,40,0.07),transparent)', animation: 'shimmerMove 2.5s 0.8s ease infinite' }} />
+              padding: '3px 8px', borderRadius: '5px',
+              background: 'rgba(10,11,15,0.75)', color: AMBER,
+              border: `1px solid ${AMBER_MED}`,
+            }}>
+              <span style={{ width: '5px', height: '5px', borderRadius: '50%', background: AMBER, display: 'inline-block', animation: 'pulseDot 1.8s ease-in-out infinite' }} />
+              Verified
             </div>
           )}
         </div>
 
-        {/* Content */}
         <div style={{ padding: '12px 13px 10px' }}>
-          <div style={{ fontFamily: "'Barlow Condensed',sans-serif", fontSize: '15px', fontWeight: 700, color: '#eef2ff', letterSpacing: '0.5px', lineHeight: 1.1 }}>{pick.name}</div>
-          <div style={{ fontSize: '11px', color: '#7a8aaa', marginTop: '2px' }}>{pick.meta}</div>
+          <div style={{ fontFamily: FONT_D, fontSize: '15px', fontWeight: 700, color: INK, letterSpacing: '0.2px', lineHeight: 1.1 }}>{pick.name}</div>
+          <div style={{ fontSize: '11px', color: INK_DIM, marginTop: '2px', fontFamily: FONT_B }}>{pick.meta}</div>
 
-          {/* Real data panel (MLB / WNBA) replaces the AI record badge */}
           {hasRealData ? (
             <div style={{ marginTop: '6px', marginBottom: '6px' }}>
               {real && real.total >= MIN_REAL_GAMES ? (
                 <div style={{
-                  border: '1px solid rgba(255,90,20,0.4)',
-                  background: 'linear-gradient(135deg, rgba(255,70,0,0.13), rgba(30,12,6,0.55))',
+                  border: `1px solid ${AMBER_MED}`,
+                  background: `linear-gradient(135deg, ${AMBER_DIM}, rgba(15,13,8,0.6))`,
                   borderRadius: '10px', padding: '7px 9px',
-                  animation: 'realGlow 2.4s ease-in-out infinite',
                 }}>
                   <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', fontSize: '9px', fontWeight: 700, letterSpacing: '1px', color: '#ff8a4c', fontFamily: "'Barlow Condensed',sans-serif", textTransform: 'uppercase' }}>
-                      <span style={{ fontSize: '10px' }}>🔥</span> Real Data{isEsport ? ' · per map' : ''}
+                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', fontSize: '9px', fontWeight: 600, letterSpacing: '1px', color: AMBER, fontFamily: FONT_M, textTransform: 'uppercase' }}>
+                      Real Data{isEsport ? ' · per map' : ''}
                     </span>
-                    <span style={{ fontSize: '12px', fontWeight: 700, fontFamily: "'Barlow Condensed',sans-serif", color: pctColor }}>
+                    <span style={{ fontSize: '12px', fontWeight: 700, fontFamily: FONT_M, color: pctColor }}>
                       {real.cleared} of {real.total} {isEsport ? 'maps' : 'hit'} · {real.pct}%
                     </span>
                   </div>
                   <MiniChart real={real} />
-                  <div style={{ fontSize: '8px', color: 'rgba(255,170,130,0.6)', marginTop: '5px', letterSpacing: '0.4px' }}>
+                  <div style={{ fontSize: '8px', color: 'rgba(227,165,72,0.55)', marginTop: '5px', letterSpacing: '0.4px', fontFamily: FONT_B }}>
                     {isEsport
                       ? `Last ${real.total} maps · per-map pace vs ${pick.val}${mapCount > 1 ? ` (${mapCount} maps)` : ''} · BALLDONTLIE`
                       : `Last ${real.total} games vs ${pick.val} · verified by BALLDONTLIE`}
                   </div>
                 </div>
               ) : glState === 'loading' ? (
-                <div style={{ fontSize: '10px', color: '#ff8a4c', fontFamily: "'Barlow Condensed',sans-serif", display: 'flex', alignItems: 'center', gap: '6px', padding: '2px 0' }}>
+                <div style={{ fontSize: '10px', color: AMBER, fontFamily: FONT_M, display: 'flex', alignItems: 'center', gap: '6px', padding: '2px 0' }}>
                   <span style={{ fontSize: '10px', animation: 'spin 1s linear infinite', display: 'inline-block' }}>⟳</span> Loading real game data
                 </div>
               ) : real ? (
-                <div style={{ fontSize: '10px', color: '#7a8aaa', fontFamily: "'Barlow Condensed',sans-serif", padding: '2px 0' }}>
+                <div style={{ fontSize: '10px', color: INK_DIM, fontFamily: FONT_M, padding: '2px 0' }}>
                   Not enough game history yet ({real.total} of {MIN_REAL_GAMES} needed)
                 </div>
               ) : (
-                <div style={{ fontSize: '10px', color: '#7a8aaa', fontFamily: "'Barlow Condensed',sans-serif", padding: '2px 0' }}>
+                <div style={{ fontSize: '10px', color: INK_DIM, fontFamily: FONT_M, padding: '2px 0' }}>
                   No real game data for this stat yet
                 </div>
               )}
@@ -460,63 +397,60 @@ export default function PickCard({ pick, delay = 0, selected = false, onTogglePa
           ) : (
             pick.record && (
               <div style={{
-                display: 'inline-flex', alignItems: 'center', gap: '5px',
+                display: 'inline-flex', alignItems: 'center', gap: '6px',
                 marginTop: '5px', marginBottom: '4px',
-                background: 'rgba(16,185,129,0.08)', border: '1px solid rgba(16,185,129,0.2)',
+                background: 'rgba(61,221,143,0.08)', border: '1px solid rgba(61,221,143,0.2)',
                 borderRadius: '8px', padding: '3px 8px'
               }}>
-                <span style={{ fontSize: '10px' }}>📊</span>
-                <span style={{ fontSize: '10px', color: '#10b981', fontFamily: "'Barlow Condensed',sans-serif", fontWeight: 600, letterSpacing: '0.3px' }}>{pick.record}</span>
+                <span style={{ width: '5px', height: '5px', borderRadius: '50%', background: GOOD, display: 'inline-block' }} />
+                <span style={{ fontSize: '10px', color: GOOD, fontFamily: FONT_M, fontWeight: 600, letterSpacing: '0.3px' }}>{pick.record}</span>
               </div>
             )
           )}
 
           {(pick.time || pick.date) && (
-            <div style={{ fontSize: '10px', color: isGold ? '#ff9944' : '#f5c842', marginTop: '4px', marginBottom: '8px', fontFamily: "'Barlow Condensed',sans-serif", fontWeight: 600, letterSpacing: '0.5px' }}>
-              🕐 {pick.date ? `${pick.date} · ` : ''}{pick.time || ''}
+            <div style={{ fontSize: '10px', color: isGold ? AMBER : INK_DIM, marginTop: '4px', marginBottom: '8px', fontFamily: FONT_M, fontWeight: 600, letterSpacing: '0.5px' }}>
+              {pick.date ? `${pick.date} · ` : ''}{pick.time || ''}
             </div>
           )}
           {!pick.time && !pick.date && <div style={{ marginBottom: '8px' }} />}
 
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '10px' }}>
             <div>
-              <div style={{ fontSize: '11px', color: '#7a8aaa' }}>{pick.stat}</div>
+              <div style={{ fontSize: '11px', color: INK_DIM, fontFamily: FONT_B }}>{pick.stat}</div>
               <div style={{ display: 'flex', alignItems: 'center', gap: '7px', flexWrap: 'wrap' }}>
-                <div style={{ fontFamily: "'Barlow Condensed',sans-serif", fontSize: '17px', fontWeight: 700, color: '#eef2ff', lineHeight: 1 }}>{pick.val}</div>
+                <div style={{ fontFamily: FONT_M, fontSize: '17px', fontWeight: 700, color: INK, lineHeight: 1 }}>{pick.val}</div>
               </div>
             </div>
             <div style={{
               width: '38px', height: '38px', borderRadius: '50%',
               display: 'flex', alignItems: 'center', justifyContent: 'center',
               fontSize: '20px', fontWeight: 700, flexShrink: 0,
-              background: up ? 'rgba(16,185,129,0.15)' : 'rgba(239,68,68,0.15)',
-              color: up ? '#10b981' : '#ef4444',
-              border: up ? '1px solid rgba(16,185,129,0.2)' : '1px solid rgba(239,68,68,0.2)',
+              background: up ? 'rgba(61,221,143,0.15)' : 'rgba(242,85,95,0.15)',
+              color: up ? GOOD : BAD,
+              border: up ? '1px solid rgba(61,221,143,0.25)' : '1px solid rgba(242,85,95,0.25)',
             }}>{up ? '↑' : '↓'}</div>
           </div>
 
           <div style={{ marginBottom: '10px' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '5px' }}>
-              <span style={{ fontSize: '10px', color: '#3a4a6a', textTransform: 'uppercase', letterSpacing: '1px' }}>Confidence</span>
-              <span style={{ fontFamily: "'Barlow Condensed',sans-serif", fontSize: '14px', fontWeight: 700, color: confColor }}>{pick.conf}%</span>
+              <span style={{ fontSize: '10px', color: INK_FAINT, textTransform: 'uppercase', letterSpacing: '1.5px', fontFamily: FONT_M }}>Signal</span>
+              <span style={{ fontFamily: FONT_M, fontSize: '14px', fontWeight: 700, color: confColor }}>{pick.conf}%</span>
             </div>
-            <div style={{ height: '4px', background: '#0d1118', borderRadius: '2px', overflow: 'hidden' }}>
-              <div style={{ height: '100%', borderRadius: '2px', background: fillBg, width: `${barWidth}%`, transition: 'width 1.2s cubic-bezier(0.16,1,0.3,1)' }} />
-            </div>
+            <SignalMeter pct={barWidth} color={meterColor} />
           </div>
 
-          {/* Toggle button — WebkitTapHighlightColor prevents mobile ghost tap */}
           <div style={{ display: 'flex', gap: '6px' }}>
             {onToggleParlay && (
               <button
                 onClick={() => onToggleParlay(pick)}
                 style={{
                   flex: '0 0 40%', padding: '7px 0',
-                  background: selected ? '#4d9eff' : 'rgba(255,255,255,0.03)',
-                  border: selected ? '1px solid #4d9eff' : '1px solid rgba(255,255,255,0.06)',
+                  background: selected ? PULSE_BLUE : 'rgba(255,255,255,0.03)',
+                  border: selected ? `1px solid ${PULSE_BLUE}` : '1px solid rgba(255,255,255,0.07)',
                   borderRadius: '8px',
-                  color: selected ? '#04101f' : '#7a8aaa',
-                  fontFamily: "'Barlow',sans-serif", fontSize: '11px', fontWeight: 700,
+                  color: selected ? '#04101f' : INK_DIM,
+                  fontFamily: FONT_M, fontSize: '11px', fontWeight: 700,
                   letterSpacing: '0.5px', cursor: 'pointer',
                   WebkitTapHighlightColor: 'transparent',
                   touchAction: 'manipulation',
@@ -529,11 +463,11 @@ export default function PickCard({ pick, delay = 0, selected = false, onTogglePa
               onClick={() => setInfoOpen(prev => !prev)}
               style={{
                 flex: 1, padding: '7px 0',
-                background: isGold ? 'rgba(255,60,0,0.05)' : 'rgba(255,255,255,0.03)',
-                border: isGold ? '1px solid rgba(255,60,0,0.15)' : '1px solid rgba(255,255,255,0.06)',
+                background: isGold ? AMBER_DIM : 'rgba(255,255,255,0.03)',
+                border: isGold ? `1px solid ${AMBER_MED}` : '1px solid rgba(255,255,255,0.07)',
                 borderRadius: '8px',
-                color: isGold ? 'rgba(255,130,0,0.75)' : '#3a4a6a',
-                fontFamily: "'Barlow',sans-serif", fontSize: '11px', fontWeight: 500,
+                color: isGold ? AMBER : INK_FAINT,
+                fontFamily: FONT_M, fontSize: '11px', fontWeight: 500,
                 letterSpacing: '0.5px', cursor: 'pointer',
                 WebkitTapHighlightColor: 'transparent',
                 touchAction: 'manipulation',
@@ -544,31 +478,25 @@ export default function PickCard({ pick, delay = 0, selected = false, onTogglePa
           </div>
         </div>
 
-        {/* Info section — maxHeight transition instead of conditional render = no mobile freeze */}
-        <div style={{
-          maxHeight: infoOpen ? '640px' : '0px',
-          overflow: 'hidden',
-          transition: 'max-height 0.35s ease',
-        }}>
-          <div style={{ padding: '12px 13px', borderTop: `1px solid ${isGold ? 'rgba(255,60,0,0.12)' : 'rgba(255,255,255,0.06)'}`, background: isGold ? '#130800' : '#0c1018' }}>
+        <div style={{ maxHeight: infoOpen ? '640px' : '0px', overflow: 'hidden', transition: 'max-height 0.35s ease' }}>
+          <div style={{ padding: '12px 13px', borderTop: `1px solid ${isGold ? AMBER_DIM : 'rgba(255,255,255,0.06)'}`, background: isGold ? '#14100a' : '#0d0f13' }}>
 
-            {/* Real recent games (MLB / WNBA) */}
             {hasRealData && real && real.total >= MIN_REAL_GAMES && (
               <div style={{ marginBottom: '12px' }}>
-                <div style={{ fontSize: '9px', color: '#ff8a4c', textTransform: 'uppercase', letterSpacing: '1.5px', marginBottom: '6px', fontFamily: "'Barlow Condensed',sans-serif", fontWeight: 600 }}>
-                  🔥 Recent {isEsport ? 'maps' : 'games'} · {real.cleared}/{real.total} cleared {isEsport ? `${(parseFloat(pick.val) / mapCount).toFixed(1)}/map` : pick.val}
+                <div style={{ fontSize: '9px', color: AMBER, textTransform: 'uppercase', letterSpacing: '1.5px', marginBottom: '6px', fontFamily: FONT_M, fontWeight: 600 }}>
+                  Recent {isEsport ? 'maps' : 'games'} · {real.cleared}/{real.total} cleared {isEsport ? `${(parseFloat(pick.val) / mapCount).toFixed(1)}/map` : pick.val}
                 </div>
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
                   {[...real.rows].reverse().map((r, i) => (
                     <div key={i} style={{
                       display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '2px',
                       minWidth: '34px', padding: '4px 2px', borderRadius: '6px',
-                      background: r.cleared ? 'rgba(21,214,143,0.1)' : 'rgba(239,68,68,0.1)',
-                      border: `1px solid ${r.cleared ? 'rgba(21,214,143,0.25)' : 'rgba(239,68,68,0.25)'}`,
+                      background: r.cleared ? 'rgba(61,221,143,0.1)' : 'rgba(242,85,95,0.1)',
+                      border: `1px solid ${r.cleared ? 'rgba(61,221,143,0.25)' : 'rgba(242,85,95,0.25)'}`,
                     }}>
-                      <span style={{ fontSize: '8px', color: '#7a8aaa' }}>{fmtDate(r.date)}</span>
-                      <span style={{ fontFamily: "'Barlow Condensed',sans-serif", fontSize: '13px', fontWeight: 700, color: r.cleared ? '#15d68f' : '#ef4444' }}>{Number.isInteger(r.value) ? r.value : r.value.toFixed(1)}</span>
-                      <span style={{ fontSize: '8px', color: r.cleared ? '#15d68f' : '#ef4444' }}>{r.cleared ? '✓' : '✗'}</span>
+                      <span style={{ fontSize: '8px', color: INK_DIM, fontFamily: FONT_M }}>{fmtDate(r.date)}</span>
+                      <span style={{ fontFamily: FONT_M, fontSize: '13px', fontWeight: 700, color: r.cleared ? GOOD : BAD }}>{Number.isInteger(r.value) ? r.value : r.value.toFixed(1)}</span>
+                      <span style={{ fontSize: '8px', color: r.cleared ? GOOD : BAD }}>{r.cleared ? '✓' : '✗'}</span>
                     </div>
                   ))}
                 </div>
@@ -576,21 +504,21 @@ export default function PickCard({ pick, delay = 0, selected = false, onTogglePa
             )}
 
             <div style={{ marginBottom: '10px' }}>
-              <div style={{ fontSize: '9px', color: isGold ? 'rgba(255,110,0,0.6)' : '#3a4a6a', textTransform: 'uppercase', letterSpacing: '1.5px', marginBottom: '4px', fontFamily: "'Barlow Condensed',sans-serif", fontWeight: 600 }}>Why it's strong</div>
-              <div style={{ fontSize: '12px', color: '#7a8aaa', lineHeight: 1.55 }}>{pick.bull}</div>
+              <div style={{ fontSize: '9px', color: isGold ? 'rgba(227,165,72,0.65)' : INK_FAINT, textTransform: 'uppercase', letterSpacing: '1.5px', marginBottom: '4px', fontFamily: FONT_M, fontWeight: 600 }}>Why it's strong</div>
+              <div style={{ fontSize: '12px', color: INK_DIM, lineHeight: 1.55, fontFamily: FONT_B }}>{pick.bull}</div>
             </div>
             <div style={{ marginBottom: '10px' }}>
-              <div style={{ fontSize: '9px', color: isGold ? 'rgba(255,110,0,0.6)' : '#3a4a6a', textTransform: 'uppercase', letterSpacing: '1.5px', marginBottom: '4px', fontFamily: "'Barlow Condensed',sans-serif", fontWeight: 600 }}>Risk factor</div>
-              <div style={{ fontSize: '12px', color: '#7a8aaa', lineHeight: 1.55 }}>{pick.bear}</div>
+              <div style={{ fontSize: '9px', color: isGold ? 'rgba(227,165,72,0.65)' : INK_FAINT, textTransform: 'uppercase', letterSpacing: '1.5px', marginBottom: '4px', fontFamily: FONT_M, fontWeight: 600 }}>Risk factor</div>
+              <div style={{ fontSize: '12px', color: INK_DIM, lineHeight: 1.55, fontFamily: FONT_B }}>{pick.bear}</div>
             </div>
             <div>
-              <div style={{ fontSize: '9px', color: isGold ? 'rgba(255,110,0,0.6)' : '#3a4a6a', textTransform: 'uppercase', letterSpacing: '1.5px', marginBottom: '6px', fontFamily: "'Barlow Condensed',sans-serif", fontWeight: 600 }}>Stat category breakdown</div>
+              <div style={{ fontSize: '9px', color: isGold ? 'rgba(227,165,72,0.65)' : INK_FAINT, textTransform: 'uppercase', letterSpacing: '1.5px', marginBottom: '6px', fontFamily: FONT_M, fontWeight: 600 }}>Stat category breakdown</div>
               {pick.cats && pick.cats.map((c, i) => {
-                const cc = c.p >= 90 ? '#f5c842' : c.p >= 75 ? '#10b981' : '#7a8aaa'
+                const cc = c.p >= 90 ? AMBER : c.p >= 75 ? GOOD : INK_DIM
                 return (
                   <div key={i} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '5px' }}>
-                    <span style={{ fontSize: '11px', color: '#7a8aaa' }}>{c.n}</span>
-                    <span style={{ fontSize: '11px', fontWeight: 700, fontFamily: "'Barlow Condensed',sans-serif", color: cc }}>{c.p}%</span>
+                    <span style={{ fontSize: '11px', color: INK_DIM, fontFamily: FONT_B }}>{c.n}</span>
+                    <span style={{ fontSize: '11px', fontWeight: 700, fontFamily: FONT_M, color: cc }}>{c.p}%</span>
                   </div>
                 )
               })}
@@ -600,40 +528,16 @@ export default function PickCard({ pick, delay = 0, selected = false, onTogglePa
       </div>
 
       <style>{`
-        @keyframes outerFireGlow {
-          0%,100% { box-shadow: 0 0 18px 4px rgba(255,50,0,0.25), 0 0 40px 8px rgba(255,90,0,0.12); }
-          33%      { box-shadow: 0 0 24px 6px rgba(255,90,0,0.35), 0 0 55px 12px rgba(255,140,0,0.18); }
-          66%      { box-shadow: 0 0 20px 5px rgba(255,140,0,0.3), 0 0 48px 10px rgba(245,190,50,0.15); }
+        @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=IBM+Plex+Mono:wght@500;600;700&display=swap');
+        @keyframes signalAmbient {
+          0%,100% { box-shadow: 0 0 0 1px rgba(227,165,72,0.4), 0 0 14px rgba(227,165,72,0.12); }
+          50%      { box-shadow: 0 0 0 1px rgba(227,165,72,0.55), 0 0 22px rgba(227,165,72,0.2); }
         }
-        @keyframes realGlow {
-          0%,100% { box-shadow: 0 0 8px rgba(255,70,0,0.25), inset 0 0 12px rgba(255,90,0,0.06); }
-          50%      { box-shadow: 0 0 16px rgba(255,90,0,0.45), inset 0 0 16px rgba(255,120,0,0.1); }
-        }
-        @keyframes shimmerMove {
-          0% { transform: translateX(-100%); }
-          100% { transform: translateX(300%); }
+        @keyframes pulseDot {
+          0%,100% { opacity: 1; }
+          50%      { opacity: 0.35; }
         }
         @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
-        @keyframes flicker0 {
-          from { transform: scaleX(1)    translateY(2px)   rotate(-4deg); opacity: 0.92; }
-          to   { transform: scaleX(0.5)  translateY(-18px) rotate(5deg);  opacity: 0.05; }
-        }
-        @keyframes flicker1 {
-          from { transform: scaleX(0.85) translateY(0px)   rotate(3deg);  opacity: 1; }
-          to   { transform: scaleX(1.3)  translateY(-22px) rotate(-6deg); opacity: 0.06; }
-        }
-        @keyframes flicker2 {
-          from { transform: scaleX(1.2)  translateY(1px)   rotate(-2deg); opacity: 0.88; }
-          to   { transform: scaleX(0.6)  translateY(-14px) rotate(7deg);  opacity: 0.04; }
-        }
-        @keyframes flickerSide0 {
-          from { transform: rotate(-90deg) scaleX(1)   translateY(1px);   opacity: 0.8; }
-          to   { transform: rotate(-90deg) scaleX(0.5) translateY(-14px); opacity: 0.04; }
-        }
-        @keyframes flickerSide1 {
-          from { transform: rotate(90deg) scaleX(0.9)  translateY(0px);   opacity: 0.85; }
-          to   { transform: rotate(90deg) scaleX(1.2)  translateY(-16px); opacity: 0.05; }
-        }
       `}</style>
     </div>
   )
