@@ -193,7 +193,7 @@ const FLAME_GRADIENTS = [
   'radial-gradient(ellipse at bottom, rgba(255,140,0,0.85),rgba(255,210,50,0.35) 45%, transparent 80%)',
 ]
 
-export default function PickCard({ pick, delay = 0 }) {
+export default function PickCard({ pick, delay = 0, selected = false, onToggleParlay = null }) {
   const [revealed, setRevealed] = useState(false)
   const [barWidth, setBarWidth] = useState(0)
   const [infoOpen, setInfoOpen] = useState(false)
@@ -273,7 +273,7 @@ export default function PickCard({ pick, delay = 0 }) {
 
   const pctColor = real ? (real.pct >= 66 ? '#15d68f' : real.pct >= 40 ? '#f5c842' : '#ef4444') : '#7a8aaa'
 
-  const borderColor = isGold ? '#b84000' : t === 'high' ? 'rgba(16,185,129,0.3)' : 'rgba(255,255,255,0.06)'
+  const borderColor = selected ? '#4d9eff' : isGold ? '#b84000' : t === 'high' ? 'rgba(16,185,129,0.3)' : 'rgba(255,255,255,0.06)'
   const confColor = isGold ? '#f5c842' : t === 'high' ? '#10b981' : '#7a8aaa'
   const fillBg = isGold ? 'linear-gradient(90deg,#d4a017,#f5c842,#fff0a0)' : t === 'high' ? '#10b981' : '#3a4a6a'
 
@@ -350,7 +350,9 @@ export default function PickCard({ pick, delay = 0 }) {
         transition: isGold
           ? 'opacity 0.5s ease, transform 0.7s cubic-bezier(0.16,1,0.3,1)'
           : 'opacity 0.4s ease, transform 0.4s ease',
-        boxShadow: revealed && isGold ? '0 0 0 1px rgba(180,40,0,0.5), inset 0 -30px 40px -10px rgba(180,30,0,0.2)' : 'none',
+        boxShadow: selected
+          ? '0 0 0 2px #4d9eff, 0 0 16px rgba(77,158,255,0.35)'
+          : (revealed && isGold ? '0 0 0 1px rgba(180,40,0,0.5), inset 0 -30px 40px -10px rgba(180,30,0,0.2)' : 'none'),
         backdropFilter: 'blur(8px)',
         WebkitBackdropFilter: 'blur(8px)',
       }}>
@@ -504,22 +506,42 @@ export default function PickCard({ pick, delay = 0 }) {
           </div>
 
           {/* Toggle button — WebkitTapHighlightColor prevents mobile ghost tap */}
-          <button
-            onClick={() => setInfoOpen(prev => !prev)}
-            style={{
-              width: '100%', padding: '7px 0',
-              background: isGold ? 'rgba(255,60,0,0.05)' : 'rgba(255,255,255,0.03)',
-              border: isGold ? '1px solid rgba(255,60,0,0.15)' : '1px solid rgba(255,255,255,0.06)',
-              borderRadius: '8px',
-              color: isGold ? 'rgba(255,130,0,0.75)' : '#3a4a6a',
-              fontFamily: "'Barlow',sans-serif", fontSize: '11px', fontWeight: 500,
-              letterSpacing: '0.5px', cursor: 'pointer',
-              WebkitTapHighlightColor: 'transparent',
-              touchAction: 'manipulation',
-              userSelect: 'none',
-              WebkitUserSelect: 'none',
-            }}
-          >{infoOpen ? 'Hide Info ▴' : 'View Info ▾'}</button>
+          <div style={{ display: 'flex', gap: '6px' }}>
+            {onToggleParlay && (
+              <button
+                onClick={() => onToggleParlay(pick)}
+                style={{
+                  flex: '0 0 40%', padding: '7px 0',
+                  background: selected ? '#4d9eff' : 'rgba(255,255,255,0.03)',
+                  border: selected ? '1px solid #4d9eff' : '1px solid rgba(255,255,255,0.06)',
+                  borderRadius: '8px',
+                  color: selected ? '#04101f' : '#7a8aaa',
+                  fontFamily: "'Barlow',sans-serif", fontSize: '11px', fontWeight: 700,
+                  letterSpacing: '0.5px', cursor: 'pointer',
+                  WebkitTapHighlightColor: 'transparent',
+                  touchAction: 'manipulation',
+                  userSelect: 'none',
+                  WebkitUserSelect: 'none',
+                }}
+              >{selected ? '✓ Parlay' : '+ Parlay'}</button>
+            )}
+            <button
+              onClick={() => setInfoOpen(prev => !prev)}
+              style={{
+                flex: 1, padding: '7px 0',
+                background: isGold ? 'rgba(255,60,0,0.05)' : 'rgba(255,255,255,0.03)',
+                border: isGold ? '1px solid rgba(255,60,0,0.15)' : '1px solid rgba(255,255,255,0.06)',
+                borderRadius: '8px',
+                color: isGold ? 'rgba(255,130,0,0.75)' : '#3a4a6a',
+                fontFamily: "'Barlow',sans-serif", fontSize: '11px', fontWeight: 500,
+                letterSpacing: '0.5px', cursor: 'pointer',
+                WebkitTapHighlightColor: 'transparent',
+                touchAction: 'manipulation',
+                userSelect: 'none',
+                WebkitUserSelect: 'none',
+              }}
+            >{infoOpen ? 'Hide Info ▴' : 'View Info ▾'}</button>
+          </div>
         </div>
 
         {/* Info section — maxHeight transition instead of conditional render = no mobile freeze */}

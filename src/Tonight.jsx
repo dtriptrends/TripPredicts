@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react'
 import PickCard from './PickCard'
+import ParlayBuilder, { MAX_LEGS } from './ParlayBuilder'
 
 const SERVER = 'https://trippredicts-production-cfad.up.railway.app'
 
@@ -145,6 +146,15 @@ export default function Tonight() {
   const [factIdx, setFactIdx] = useState(0)
   const [factVisible, setFactVisible] = useState(true)
   const [liveCount, setLiveCount] = useState(0)
+  const [parlayPicks, setParlayPicks] = useState([])
+
+  function toggleParlay(pick) {
+    setParlayPicks(prev => {
+      if (prev.some(p => p.id === pick.id)) return prev.filter(p => p.id !== pick.id)
+      if (prev.length >= MAX_LEGS) return prev
+      return [...prev, pick]
+    })
+  }
 
   const now = new Date()
   const hour = now.getHours()
@@ -347,7 +357,7 @@ export default function Tonight() {
       )}
 
       {!isLoading && !error && displayPicks.length > 0 && (
-        <div style={{ flex: 1, overflowY: 'auto', padding: '14px 20px 24px' }}>
+        <div style={{ flex: 1, overflowY: 'auto', padding: `14px 20px ${parlayPicks.length > 0 ? '76px' : '24px'}` }}>
           {goldFilter === 'all' && goldPicks.length > 0 && (
             <div style={{ marginBottom: '20px' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '12px' }}>
@@ -356,7 +366,7 @@ export default function Tonight() {
                 <span style={{ fontSize: '11px', color: 'var(--text3)' }}>90%+</span>
               </div>
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(170px, 1fr))', gap: '14px' }}>
-                {goldPicks.map((p, i) => <PickCard key={p.id} pick={p} delay={i * 60} />)}
+                {goldPicks.map((p, i) => <PickCard key={p.id} pick={p} delay={i * 60} selected={parlayPicks.some(x => x.id === p.id)} onToggleParlay={toggleParlay} />)}
               </div>
             </div>
           )}
@@ -368,7 +378,7 @@ export default function Tonight() {
                 <span style={{ fontSize: '11px', color: 'var(--text3)' }}>75-89%</span>
               </div>
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(170px, 1fr))', gap: '14px' }}>
-                {highPicks.map((p, i) => <PickCard key={p.id} pick={p} delay={i * 60} />)}
+                {highPicks.map((p, i) => <PickCard key={p.id} pick={p} delay={i * 60} selected={parlayPicks.some(x => x.id === p.id)} onToggleParlay={toggleParlay} />)}
               </div>
             </div>
           )}
@@ -380,13 +390,13 @@ export default function Tonight() {
                 <span style={{ fontSize: '11px', color: 'var(--text3)' }}>Below 75%</span>
               </div>
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(170px, 1fr))', gap: '14px' }}>
-                {regularPicks.map((p, i) => <PickCard key={p.id} pick={p} delay={i * 60} />)}
+                {regularPicks.map((p, i) => <PickCard key={p.id} pick={p} delay={i * 60} selected={parlayPicks.some(x => x.id === p.id)} onToggleParlay={toggleParlay} />)}
               </div>
             </div>
           )}
           {goldFilter === 'gold' && (
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(170px, 1fr))', gap: '14px' }}>
-              {goldPicks.map((p, i) => <PickCard key={p.id} pick={p} delay={i * 60} />)}
+              {goldPicks.map((p, i) => <PickCard key={p.id} pick={p} delay={i * 60} selected={parlayPicks.some(x => x.id === p.id)} onToggleParlay={toggleParlay} />)}
             </div>
           )}
         </div>
@@ -426,6 +436,11 @@ export default function Tonight() {
           60%{transform:scale(0.94) rotate(-2deg);filter:brightness(1.1) drop-shadow(0 0 4px rgba(255,90,0,0.85));}
         }
       `}</style>
+      <ParlayBuilder
+        picks={parlayPicks}
+        onRemove={id => setParlayPicks(prev => prev.filter(p => p.id !== id))}
+        onClear={() => setParlayPicks([])}
+      />
     </div>
   )
 }

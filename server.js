@@ -886,5 +886,93 @@ app.post('/chat', async (req, res) => {
   }
 })
 
+// Analyze a multi-leg parlay. The combined hit rate is computed HERE from the
+// real numbers already on each pick, never invented by the model. Claude's
+// job is web search: today's matchup and current status for each player,
+// stated only when it's actually found, never guessed from stale training
+// knowledge. web_search_20250305 is a server-executed tool, Anthropic runs
+// the search and hands back real results in the same response; it does not
+// pause for the client to fulfill a tool call the way custom tools do.
+app.post('/parlay-analysis', async (req, res) => {
+  try {
+    const { picks, currentTime } = req.body
+    if (!picks || !picks.length) throw new Error('No picks provided')
+    if (picks.length > 6) throw new Error('Max 6 legs per parlay')
+
+    let combinedRate = 1
+    let allRatesKnown = true
+    const legContext = picks.map(p => {
+      let rate = null, rateLabel = 'unknown'
+      if (p.realHit != null && p.realTotal) {
+        rate = p.realHit / p.realTotal
+        rateLabel = `${p.realHit} of last ${p.realTotal} games hit this line, verified real BALLDONTLIE data`
+      } else if (p.conf != null) {
+        rate = p.conf / 100
+        rateLabel = `${p.conf}% per the AI model, NOT independently verified against game logs`
+      } else {
+        allRatesKnown = false
+      }
+      if (rate != null) combinedRate *= rate
+      return `- ${p.name} (${p.league}${p.team ? ' · ' + p.team : ''}): ${p.stat} ${p.dir === 'HIGHER' ? 'over' : 'under'} ${p.val}. Historical rate: ${rateLabel}.`
+    }).join('\n')
+
+    const combinedPct = allRatesKnown ? Math.round(combinedRate * 100) : null
+
+    const userMsg = `Current time: ${currentTime} ET
+
+A user is building this ${picks.length}-leg parlay:
+
+${legContext}
+
+${combinedPct != null
+  ? `The combined hit rate if every leg is independent is ${combinedPct}%, calculated directly from the historical rates above. Reference this exact number in your summary. Do not calculate or state a different one.`
+  : `Not every leg has a verified historical rate, so no combined number was calculated. Do not invent one.`}
+
+For EACH player, search for who they are playing today or tonight and their current injury or lineup status. State status information only when you actually find it in a search result. If you cannot confirm current status, say so plainly, for example "no recent injury report found," instead of guessing from memory.
+
+After researching all ${picks.length} legs, respond with ONLY this JSON object as your final message, nothing before or after it, no markdown fences:
+{"verdict":"Strong or Moderate or Risky","summary":"2-3 sentences on the overall parlay, referencing the combined rate if one was given","legs":[{"name":"player name","note":"1-2 sentences: opponent tonight, current status if found, and any risk factor"}]}`
+
+    let messages = [{ role: 'user', content: userMsg }]
+    let finalText = ''
+    for (let i = 0; i < 6; i++) {
+      const r = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-api-key': API_KEY, 'anthropic-version': '2023-06-01' },
+        body: JSON.stringify({
+          model: 'claude-sonnet-4-6',
+          max_tokens: 2000,
+          tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 8 }],
+          system: `You are a sports betting parlay analyst. Use web search to check today's matchups and each player's current status before giving a verdict. Never state injury or lineup information you did not actually find via search. Output ONLY the requested JSON as your final answer, nothing else.`,
+          messages
+        })
+      })
+      const data = await r.json()
+      if (!data.content) throw new Error(data.error?.message || 'No content from AI')
+      finalText += data.content.filter(b => b.type === 'text').map(b => b.text).join('\n')
+      if (data.stop_reason === 'pause_turn') {
+        messages = [...messages, { role: 'assistant', content: data.content }]
+        continue
+      }
+      break
+    }
+
+    const start = finalText.indexOf('{')
+    const end = finalText.lastIndexOf('}')
+    if (start === -1 || end === -1) throw new Error('Could not parse the analysis, try again')
+    const parsed = JSON.parse(finalText.slice(start, end + 1))
+
+    res.json({
+      verdict: parsed.verdict || null,
+      summary: parsed.summary || null,
+      legs: Array.isArray(parsed.legs) ? parsed.legs : [],
+      combinedRate: combinedPct
+    })
+  } catch (e) {
+    console.error('Parlay analysis error:', e.message)
+    res.status(500).json({ error: e.message })
+  }
+})
+
 const PORT = process.env.PORT || 8080
 app.listen(PORT, () => console.log(`Trip Predicts server running on port ${PORT}`))

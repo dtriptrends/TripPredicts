@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react'
 import PickCard from './PickCard'
+import ParlayBuilder, { MAX_LEGS } from './ParlayBuilder'
 import { useSubscription } from './useSubscription'
 import { supabase } from './supabase'
 
@@ -219,6 +220,15 @@ function GoldContent() {
   const [facts, setFacts] = useState(FACTS)
   const [factIdx, setFactIdx] = useState(0)
   const [factVisible, setFactVisible] = useState(true)
+  const [parlayPicks, setParlayPicks] = useState([])
+
+  function toggleParlay(pick) {
+    setParlayPicks(prev => {
+      if (prev.some(p => p.id === pick.id)) return prev.filter(p => p.id !== pick.id)
+      if (prev.length >= MAX_LEGS) return prev
+      return [...prev, pick]
+    })
+  }
 
   const now = new Date()
   const currentTime = now.toLocaleTimeString('en-US', { timeZone: 'America/New_York', hour: 'numeric', minute: '2-digit', hour12: true })
@@ -416,14 +426,14 @@ function GoldContent() {
       )}
 
       {!isLoading && !error && currentPicks.length > 0 && (
-        <div style={{ flex: 1, overflowY: 'auto', padding: '14px 20px 24px' }}>
+        <div style={{ flex: 1, overflowY: 'auto', padding: `14px 20px ${parlayPicks.length > 0 ? '76px' : '24px'}` }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '16px' }}>
             <span style={{ fontFamily: 'var(--font-d)', fontSize: '16px', letterSpacing: '2px', color: '#f5c842' }}>★ GOLD — {selectedLeague}</span>
             <div style={{ flex: 1, height: '1px', background: 'rgba(245,200,66,0.2)' }} />
             <span style={{ fontSize: '11px', color: 'var(--text3)' }}>{currentPicks.length} pick{currentPicks.length !== 1 ? 's' : ''} · 80%+</span>
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(170px, 1fr))', gap: '14px' }}>
-            {currentPicks.map((p, i) => <PickCard key={p.id} pick={p} delay={i * 60} />)}
+            {currentPicks.map((p, i) => <PickCard key={p.id} pick={p} delay={i * 60} selected={parlayPicks.some(x => x.id === p.id)} onToggleParlay={toggleParlay} />)}
           </div>
         </div>
       )}
@@ -432,7 +442,7 @@ function GoldContent() {
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '40px', textAlign: 'center' }}>
           <div style={{ fontSize: '40px', marginBottom: '16px' }}>★</div>
           <div style={{ fontFamily: 'var(--font-d)', fontSize: '22px', letterSpacing: '2px', color: 'var(--text2)', marginBottom: '8px' }}>NO GOLD FOR {selectedLeague}</div>
-          <div style={{ fontSize: '13px', color: 'var(--text3)', marginBottom: '24px', lineHeight: 1.6, maxWidth: '280px' }}>No verified picks hit 80%+ confidence for {selectedLeague} right now. Try another league or check back later.</div>
+          <div style={{ fontSize: '13px', color: 'var(--text3)', marginBottom: '24px', lineHeight: 1.6, maxWidth: '280px' }}>No verified picks hit {selectedLeague === 'WNBA' ? '70%+' : selectedLeague === 'MLB' ? '80%+' : '90%+'} confidence for {selectedLeague} right now. Try another league or check back later.</div>
           {selectedLeague !== 'ALL' && <button onClick={() => handleTabSelect('ALL')} style={{ background: 'none', border: '1px solid var(--border2)', color: 'var(--text2)', fontFamily: 'var(--font)', fontSize: '13px', padding: '8px 20px', borderRadius: '10px', cursor: 'pointer', marginBottom: '10px' }}>Check All Sports</button>}
           <button onClick={handleRefresh} style={{ background: 'none', border: '1px solid rgba(245,200,66,0.3)', color: '#f5c842', fontFamily: 'var(--font)', fontSize: '13px', padding: '8px 20px', borderRadius: '10px', cursor: 'pointer' }}>Refresh Picks</button>
         </div>
@@ -456,6 +466,11 @@ function GoldContent() {
           60%{transform:scale(0.94) rotate(-2deg);filter:brightness(1.1) drop-shadow(0 0 4px rgba(255,90,0,0.85));}
         }
       `}</style>
+      <ParlayBuilder
+        picks={parlayPicks}
+        onRemove={id => setParlayPicks(prev => prev.filter(p => p.id !== id))}
+        onClear={() => setParlayPicks([])}
+      />
     </div>
   )
 }
