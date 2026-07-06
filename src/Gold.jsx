@@ -6,42 +6,26 @@ import { supabase } from './supabase'
 
 const SERVER = 'https://trippredicts-production-cfad.up.railway.app'
 
-// ============ SIGNAL design tokens (kept in sync with PickCard.jsx / Tonight.jsx) ============
-const VOID      = '#0A0C11'
-const INK       = '#F1EEE6'
-const INK_DIM   = '#9AA0AB'
-const INK_FAINT = '#565A66'
-const PANEL     = '#12151C'
-const LINE_SOFT = 'rgba(255,255,255,0.08)'
-const AMBER      = '#E3A548'
-const AMBER_DIM  = 'rgba(227,165,72,0.12)'
-const AMBER_MED  = 'rgba(227,165,72,0.4)'
-const GOOD = '#3DDD8F'
-const BAD  = '#F2555F'
-const FONT_D = "'Space Grotesk',sans-serif"
-const FONT_M = "'IBM Plex Mono',monospace"
-const FONT_B = "'Barlow',sans-serif"
-
 const LEAGUE_ORDER = ['ALL', 'MLB', 'WNBA', 'NBA', 'NHL', 'NFL', 'CS2', 'LOL', 'VALORANT', 'COD', 'SOCCER', 'TENNIS', 'GOLF', 'MMA']
 
-// Sports backed by real BALLDONTLIE game data. These tabs get the verified treatment.
+// Sports backed by real BALLDONTLIE game data. These tabs get the fiery treatment.
 const REAL_DATA_LEAGUES = ['MLB', 'WNBA']
 
 const LEAGUE_COLORS = {
-  'ALL':      AMBER,
+  'ALL':      '#f5c842',
   'NBA':      '#e17210',
   'MLB':      '#4a90d9',
   'NHL':      '#aab4cc',
   'NFL':      '#4a90d9',
-  'WNBA':     AMBER,
+  'WNBA':     '#ff6900',
   'CS2':      '#00b4d8',
   'LOL':      '#c89b3c',
   'VALORANT': '#ff4655',
   'COD':      '#00e676',
-  'SOCCER':   GOOD,
-  'TENNIS':   AMBER,
+  'SOCCER':   '#10b981',
+  'TENNIS':   '#f5c842',
   'GOLF':     '#4a9e5c',
-  'MMA':      BAD,
+  'MMA':      '#ef4444',
 }
 
 const STEP_LABELS = [
@@ -67,7 +51,7 @@ const FACTS = [
   'The AI never defaults to HIGHER. Direction is set by the data every time.',
   'Stat category breakdown is on every card so you can verify the logic yourself.',
   'Only pre-game props starting within the next 36 hours are ever shown.',
-  'A verified league tab means those numbers come from real game logs.',
+  'A red flame tab means those numbers come from verified real game logs.',
   'Every gold pick includes a risk factor so you know what could go wrong.',
   'High usage players hit volume-based lines more consistently over a full season.',
   'Rare but powerful. These are the plays worth sizing up when they appear.',
@@ -175,48 +159,43 @@ export default function Gold() {
 
   if (status === 'loading') {
     return (
-      <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', background: VOID }}>
-        <div style={{ fontFamily: FONT_M, fontSize: '15px', letterSpacing: '2px', color: AMBER }}>CHECKING ACCESS...</div>
+      <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+        <div style={{ fontFamily: 'var(--font-d)', fontSize: '18px', letterSpacing: '2px', color: 'var(--gold)' }}>CHECKING ACCESS...</div>
       </div>
     )
   }
 
   if (status === 'inactive') {
     return (
-      <div style={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '40px', textAlign: 'center', overflowY: 'auto', background: VOID }}>
-        <div style={{
-          width: '64px', height: '64px', borderRadius: '50%', marginBottom: '18px',
-          display: 'flex', alignItems: 'center', justifyContent: 'center',
-          background: AMBER_DIM, border: `1px solid ${AMBER_MED}`,
-          fontFamily: FONT_D, fontSize: '26px', color: AMBER, fontWeight: 700
-        }}>◆</div>
-        <div style={{ fontFamily: FONT_D, fontSize: '30px', fontWeight: 700, letterSpacing: '0.5px', color: AMBER, marginBottom: '12px' }}>
-          GOLD PICKS
+      <div style={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '40px', textAlign: 'center', overflowY: 'auto' }}>
+        <div style={{ fontSize: '52px', marginBottom: '16px' }}>🔒</div>
+        <div style={{ fontFamily: 'var(--font-d)', fontSize: '32px', letterSpacing: '2px', background: 'linear-gradient(90deg,#d4a017,#f5c842,#fff0a0)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent', marginBottom: '12px' }}>
+          ★ GOLD PICKS
         </div>
-        <div style={{ fontSize: '14px', color: INK_DIM, maxWidth: '320px', lineHeight: 1.6, marginBottom: '16px', fontFamily: FONT_B }}>
+        <div style={{ fontSize: '14px', color: 'var(--text2)', maxWidth: '320px', lineHeight: 1.6, marginBottom: '16px' }}>
           Unlock every gold pick across all sports. 80%+ confidence plays, the full board, updated live.
         </div>
-        <div style={{ fontFamily: FONT_M, fontSize: '36px', fontWeight: 700, letterSpacing: '0.5px', color: INK, marginBottom: '4px', lineHeight: 1 }}>
-          $25<span style={{ fontSize: '16px', color: INK_DIM, fontFamily: FONT_B, fontWeight: 400 }}>/month</span>
+        <div style={{ fontFamily: 'var(--font-d)', fontSize: '40px', letterSpacing: '1px', color: '#f5c842', marginBottom: '4px', lineHeight: 1 }}>
+          $25<span style={{ fontSize: '18px', color: 'var(--text2)' }}>/month</span>
         </div>
-        <div style={{ fontSize: '11px', color: INK_FAINT, marginBottom: '28px', fontFamily: FONT_M }}>Cancel anytime</div>
+        <div style={{ fontSize: '11px', color: 'var(--text3)', marginBottom: '28px' }}>Cancel anytime</div>
 
         <button
           onClick={handleSubscribe}
           disabled={loadingCheckout}
           style={{
-            background: AMBER,
-            border: 'none', borderRadius: '10px',
-            color: '#100b02', fontFamily: FONT_D, fontSize: '17px', fontWeight: 700,
-            letterSpacing: '1px', padding: '15px 44px', cursor: loadingCheckout ? 'not-allowed' : 'pointer',
+            background: 'linear-gradient(90deg,#d4a017,#f5c842,#fff0a0)',
+            border: 'none', borderRadius: '12px',
+            color: '#1a0f00', fontFamily: 'var(--font-d)', fontSize: '20px',
+            letterSpacing: '2px', padding: '16px 48px', cursor: loadingCheckout ? 'not-allowed' : 'pointer',
             opacity: loadingCheckout ? 0.6 : 1, textTransform: 'uppercase',
-            WebkitTapHighlightColor: 'transparent', boxShadow: '0 0 24px rgba(227,165,72,0.25)'
+            WebkitTapHighlightColor: 'transparent', boxShadow: '0 0 30px rgba(245,200,66,0.3)'
           }}
         >
           {loadingCheckout ? 'Loading...' : 'Unlock Gold'}
         </button>
 
-        <div style={{ fontSize: '11px', color: INK_FAINT, marginTop: '20px', maxWidth: '280px', lineHeight: 1.5, fontFamily: FONT_B }}>
+        <div style={{ fontSize: '11px', color: 'var(--text3)', marginTop: '20px', maxWidth: '280px', lineHeight: 1.5 }}>
           Free Tonight picks still include occasional gold calls. This unlocks the full gold board.
         </div>
       </div>
@@ -352,17 +331,17 @@ function GoldContent() {
   const currentPicks = picksCache[selectedLeague] || []
 
   return (
-    <div style={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'column', overflow: 'hidden', background: VOID }}>
+    <div style={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
 
       <div style={{ padding: '18px 20px 0', display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', flexShrink: 0 }}>
         <div>
-          <div style={{ fontFamily: FONT_D, fontSize: '26px', fontWeight: 700, letterSpacing: '0.5px', lineHeight: 1, color: AMBER }}>◆ GOLD PICKS</div>
-          <div style={{ fontSize: '11px', color: INK_DIM, marginTop: '4px', fontFamily: FONT_M }}>80%+ confidence · Strongest verified plays right now</div>
+          <div style={{ fontFamily: 'var(--font-d)', fontSize: '28px', letterSpacing: '2px', lineHeight: 1, background: 'linear-gradient(90deg,#d4a017,#f5c842,#fff0a0)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>★ GOLD PICKS</div>
+          <div style={{ fontSize: '11px', color: 'var(--text2)', marginTop: '3px' }}>80%+ confidence · Strongest verified plays right now</div>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-          {!isLoading && <button onClick={handleRefresh} style={{ background: 'none', border: `1px solid ${LINE_SOFT}`, color: INK_DIM, fontFamily: FONT_M, fontSize: '11px', padding: '5px 12px', borderRadius: '7px', cursor: 'pointer', letterSpacing: '1px' }}>Refresh</button>}
-          <div style={{ display: 'flex', alignItems: 'center', gap: '6px', background: AMBER_DIM, border: `1px solid ${AMBER_MED}`, color: AMBER, fontSize: '11px', fontWeight: 600, letterSpacing: '1.5px', textTransform: 'uppercase', padding: '5px 10px', borderRadius: '7px', fontFamily: FONT_M }}>
-            <div style={{ width: '6px', height: '6px', borderRadius: '50%', background: AMBER, animation: 'pulse 1.5s infinite' }} />LIVE
+          {!isLoading && <button onClick={handleRefresh} style={{ background: 'none', border: '1px solid var(--border2)', color: 'var(--text2)', fontFamily: 'var(--font)', fontSize: '11px', padding: '5px 12px', borderRadius: '20px', cursor: 'pointer', letterSpacing: '1px' }}>Refresh</button>}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '6px', background: 'rgba(245,200,66,0.1)', border: '1px solid rgba(245,200,66,0.25)', color: 'var(--gold)', fontSize: '11px', fontWeight: 600, letterSpacing: '1.5px', textTransform: 'uppercase', padding: '5px 10px', borderRadius: '20px' }}>
+            <div style={{ width: '6px', height: '6px', borderRadius: '50%', background: 'var(--gold)', animation: 'pulse 1.5s infinite' }} />LIVE
           </div>
         </div>
       </div>
@@ -374,33 +353,38 @@ function GoldContent() {
               {availableLeagues.map(league => {
                 const isActive = selectedLeague === league
                 const isThisLoading = loadingLeague === league
-                const color = LEAGUE_COLORS[league] || INK_DIM
+                const color = LEAGUE_COLORS[league] || '#7a8aaa'
                 const cached = picksCache[league] || []
                 const isReal = REAL_DATA_LEAGUES.includes(league)
                 const realStyle = isReal ? {
-                  border: `1px solid ${isActive ? AMBER : AMBER_MED}`,
-                  background: isActive ? AMBER : AMBER_DIM,
-                  color: isActive ? '#100b02' : AMBER,
-                  fontWeight: 700,
+                  border: `1px solid ${isActive ? '#ff7a1a' : 'rgba(255,95,25,0.55)'}`,
+                  background: isActive
+                    ? 'linear-gradient(115deg, #a82200, #ff6200, #ffa432, #ff5400, #a82200)'
+                    : 'linear-gradient(115deg, rgba(255,70,0,0.22), rgba(255,140,0,0.12), rgba(38,16,8,0.55), rgba(255,70,0,0.22))',
+                  backgroundSize: '300% 100%',
+                  color: isActive ? '#fff' : '#ffae73',
+                  fontWeight: 800,
+                  textShadow: isActive ? '0 0 9px rgba(255,150,0,0.75)' : 'none',
+                  animation: 'realFlow 3s linear infinite, realDataGlow 2.2s ease-in-out infinite',
                 } : {}
                 return (
                   <button key={league} onClick={() => handleTabSelect(league)} disabled={!!loadingLeague} style={{
-                    background: isActive ? `${color}22` : PANEL,
-                    border: `1px solid ${isActive ? color : LINE_SOFT}`,
-                    color: isActive ? color : INK_DIM,
-                    fontFamily: FONT_M, fontSize: '12px', fontWeight: 600, letterSpacing: '1px',
-                    padding: '8px 14px', borderRadius: '8px',
+                    background: isActive ? `${color}22` : 'var(--bg3)',
+                    border: `1px solid ${isActive ? color : 'var(--border)'}`,
+                    color: isActive ? color : 'var(--text2)',
+                    fontFamily: 'var(--font-c)', fontSize: '12px', fontWeight: 700, letterSpacing: '1px',
+                    padding: '8px 14px', borderRadius: '20px',
                     cursor: loadingLeague ? 'not-allowed' : 'pointer', transition: 'all 0.2s',
-                    display: 'flex', alignItems: 'center', gap: '6px', whiteSpace: 'nowrap',
+                    display: 'flex', alignItems: 'center', gap: '5px', whiteSpace: 'nowrap',
                     opacity: loadingLeague && !isActive ? 0.5 : 1, WebkitTapHighlightColor: 'transparent',
                     ...realStyle
                   }}>
                     {isReal
-                      ? <span style={{ width: '5px', height: '5px', borderRadius: '50%', background: isActive ? '#100b02' : AMBER, display: 'inline-block', animation: 'pulseDot 1.8s ease-in-out infinite' }} />
-                      : <span style={{ fontSize: '10px', color: AMBER }}>◆</span>}
+                      ? <span style={{ fontSize: '11px', display: 'inline-block', animation: 'flameFlick 0.85s ease-in-out infinite' }}>🔥</span>
+                      : <span style={{ fontSize: '9px', color: '#f5c842' }}>★</span>}
                     {league}
                     {isThisLoading && <span style={{ fontSize: '10px', animation: 'spin 1s linear infinite', display: 'inline-block' }}>⟳</span>}
-                    {cached.length > 0 && !isThisLoading && <span style={{ background: isActive ? 'rgba(0,0,0,0.2)' : 'rgba(255,255,255,0.08)', color: isActive ? '#100b02' : INK_FAINT, fontSize: '10px', fontWeight: 700, padding: '1px 6px', borderRadius: '5px' }}>{cached.length}</span>}
+                    {cached.length > 0 && !isThisLoading && <span style={{ background: isActive ? color : 'var(--border2)', color: isActive ? '#000' : 'var(--text3)', fontSize: '10px', fontWeight: 700, padding: '1px 6px', borderRadius: '10px' }}>{cached.length}</span>}
                   </button>
                 )
               })}
@@ -414,39 +398,39 @@ function GoldContent() {
           <div style={{ display: 'flex', alignItems: 'center' }}>
             {[0, 1, 2, 3].map(i => (
               <React.Fragment key={i}>
-                <div style={{ width: '32px', height: '32px', borderRadius: '7px', display: 'flex', alignItems: 'center', justifyContent: 'center', background: stepIdx > i ? AMBER : stepIdx === i ? AMBER_DIM : PANEL, border: stepIdx === i ? `2px solid ${AMBER}` : stepIdx > i ? 'none' : `1px solid ${LINE_SOFT}`, transition: 'all 0.4s ease', fontSize: '12px', fontWeight: 700, color: stepIdx > i ? '#100b02' : stepIdx === i ? AMBER : INK_FAINT, fontFamily: FONT_M }}>
+                <div style={{ width: '32px', height: '32px', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', background: stepIdx > i ? 'var(--gold)' : stepIdx === i ? 'rgba(245,200,66,0.15)' : 'var(--bg3)', border: stepIdx === i ? '2px solid var(--gold)' : stepIdx > i ? 'none' : '1px solid var(--border2)', transition: 'all 0.4s ease', fontSize: '12px', fontWeight: 700, color: stepIdx > i ? '#1a0f00' : stepIdx === i ? 'var(--gold)' : 'var(--text3)', fontFamily: 'var(--font-c)' }}>
                   {stepIdx > i ? '✓' : i + 1}
                 </div>
-                {i < 3 && <div style={{ width: '44px', height: '2px', background: stepIdx > i ? AMBER : LINE_SOFT, transition: 'background 0.6s ease' }} />}
+                {i < 3 && <div style={{ width: '44px', height: '2px', background: stepIdx > i ? 'var(--gold)' : 'var(--border)', transition: 'background 0.6s ease' }} />}
               </React.Fragment>
             ))}
           </div>
           <div style={{ width: '100%', maxWidth: '340px' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
-              <div style={{ fontFamily: FONT_M, fontSize: '14px', fontWeight: 600, letterSpacing: '2px', color: AMBER }}>{stepLabels[stepIdx] || stepLabels[0]}</div>
-              <div style={{ fontFamily: FONT_M, fontSize: '16px', fontWeight: 700, color: INK_DIM }}>{progress}%</div>
+              <div style={{ fontFamily: 'var(--font-d)', fontSize: '18px', letterSpacing: '2px', color: 'var(--gold)' }}>{stepLabels[stepIdx] || stepLabels[0]}</div>
+              <div style={{ fontFamily: 'var(--font-c)', fontSize: '16px', fontWeight: 700, color: 'var(--text2)' }}>{progress}%</div>
             </div>
-            <div style={{ height: '6px', background: PANEL, borderRadius: '3px', overflow: 'hidden', border: `1px solid ${LINE_SOFT}` }}>
-              <div style={{ height: '100%', background: AMBER, borderRadius: '3px', width: `${progress}%`, transition: 'width 0.9s cubic-bezier(0.16,1,0.3,1)' }} />
+            <div style={{ height: '6px', background: 'var(--bg3)', borderRadius: '3px', overflow: 'hidden', border: '1px solid var(--border)' }}>
+              <div style={{ height: '100%', background: 'linear-gradient(90deg,#d4a017,#f5c842,#fff0a0)', borderRadius: '3px', width: `${progress}%`, transition: 'width 0.9s cubic-bezier(0.16,1,0.3,1)' }} />
             </div>
-            <div style={{ fontSize: '13px', color: INK_DIM, marginTop: '18px', lineHeight: 1.7, textAlign: 'center', minHeight: '44px', opacity: factVisible ? 1 : 0, transition: 'opacity 0.3s ease', fontFamily: FONT_B }}>{facts[factIdx]}</div>
+            <div style={{ fontSize: '13px', color: 'var(--text2)', marginTop: '18px', lineHeight: 1.7, textAlign: 'center', minHeight: '44px', opacity: factVisible ? 1 : 0, transition: 'opacity 0.3s ease' }}>{facts[factIdx]}</div>
           </div>
         </div>
       )}
 
       {error && !isLoading && (
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '40px', textAlign: 'center' }}>
-          <div style={{ fontSize: '14px', color: INK_DIM, marginBottom: '16px', lineHeight: 1.6, fontFamily: FONT_B }}>{error}</div>
-          <button onClick={handleRefresh} style={{ background: AMBER, border: 'none', color: '#100b02', fontFamily: FONT_M, fontWeight: 700, fontSize: '13px', padding: '10px 24px', borderRadius: '8px', cursor: 'pointer' }}>Retry</button>
+          <div style={{ fontSize: '14px', color: 'var(--text2)', marginBottom: '16px', lineHeight: 1.6 }}>{error}</div>
+          <button onClick={handleRefresh} style={{ background: 'var(--accent2)', border: 'none', color: '#fff', fontFamily: 'var(--font)', fontSize: '13px', padding: '10px 24px', borderRadius: '10px', cursor: 'pointer' }}>Retry</button>
         </div>
       )}
 
       {!isLoading && !error && currentPicks.length > 0 && (
         <div style={{ flex: 1, overflowY: 'auto', padding: `14px 20px ${parlayPicks.length > 0 ? '76px' : '24px'}` }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '16px' }}>
-            <span style={{ fontFamily: FONT_D, fontSize: '15px', fontWeight: 700, letterSpacing: '0.5px', color: AMBER }}>◆ GOLD — {selectedLeague}</span>
-            <div style={{ flex: 1, height: '1px', background: AMBER_DIM }} />
-            <span style={{ fontSize: '11px', color: INK_FAINT, fontFamily: FONT_M }}>{currentPicks.length} pick{currentPicks.length !== 1 ? 's' : ''} · 80%+</span>
+            <span style={{ fontFamily: 'var(--font-d)', fontSize: '16px', letterSpacing: '2px', color: '#f5c842' }}>★ GOLD — {selectedLeague}</span>
+            <div style={{ flex: 1, height: '1px', background: 'rgba(245,200,66,0.2)' }} />
+            <span style={{ fontSize: '11px', color: 'var(--text3)' }}>{currentPicks.length} pick{currentPicks.length !== 1 ? 's' : ''} · 80%+</span>
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(170px, 1fr))', gap: '14px' }}>
             {currentPicks.map((p, i) => <PickCard key={p.id} pick={p} delay={i * 60} selected={parlayPicks.some(x => x.id === p.id)} onToggleParlay={toggleParlay} />)}
@@ -456,19 +440,31 @@ function GoldContent() {
 
       {!isLoading && !error && currentPicks.length === 0 && availableLeagues.length > 0 && (
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '40px', textAlign: 'center' }}>
-          <div style={{ fontFamily: FONT_D, fontSize: '24px', color: AMBER, marginBottom: '16px' }}>◆</div>
-          <div style={{ fontFamily: FONT_D, fontSize: '20px', fontWeight: 700, letterSpacing: '0.5px', color: INK_DIM, marginBottom: '8px' }}>NO GOLD FOR {selectedLeague}</div>
-          <div style={{ fontSize: '13px', color: INK_FAINT, marginBottom: '24px', lineHeight: 1.6, maxWidth: '280px', fontFamily: FONT_B }}>No verified picks hit {selectedLeague === 'WNBA' ? '70%+' : selectedLeague === 'MLB' ? '80%+' : '90%+'} confidence for {selectedLeague} right now. Try another league or check back later.</div>
-          {selectedLeague !== 'ALL' && <button onClick={() => handleTabSelect('ALL')} style={{ background: 'none', border: `1px solid ${LINE_SOFT}`, color: INK_DIM, fontFamily: FONT_M, fontSize: '13px', padding: '8px 20px', borderRadius: '8px', cursor: 'pointer', marginBottom: '10px' }}>Check All Sports</button>}
-          <button onClick={handleRefresh} style={{ background: 'none', border: `1px solid ${AMBER_MED}`, color: AMBER, fontFamily: FONT_M, fontSize: '13px', padding: '8px 20px', borderRadius: '8px', cursor: 'pointer' }}>Refresh Picks</button>
+          <div style={{ fontSize: '40px', marginBottom: '16px' }}>★</div>
+          <div style={{ fontFamily: 'var(--font-d)', fontSize: '22px', letterSpacing: '2px', color: 'var(--text2)', marginBottom: '8px' }}>NO GOLD FOR {selectedLeague}</div>
+          <div style={{ fontSize: '13px', color: 'var(--text3)', marginBottom: '24px', lineHeight: 1.6, maxWidth: '280px' }}>No verified picks hit {selectedLeague === 'WNBA' ? '70%+' : selectedLeague === 'MLB' ? '80%+' : '90%+'} confidence for {selectedLeague} right now. Try another league or check back later.</div>
+          {selectedLeague !== 'ALL' && <button onClick={() => handleTabSelect('ALL')} style={{ background: 'none', border: '1px solid var(--border2)', color: 'var(--text2)', fontFamily: 'var(--font)', fontSize: '13px', padding: '8px 20px', borderRadius: '10px', cursor: 'pointer', marginBottom: '10px' }}>Check All Sports</button>}
+          <button onClick={handleRefresh} style={{ background: 'none', border: '1px solid rgba(245,200,66,0.3)', color: '#f5c842', fontFamily: 'var(--font)', fontSize: '13px', padding: '8px 20px', borderRadius: '10px', cursor: 'pointer' }}>Refresh Picks</button>
         </div>
       )}
 
       <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=IBM+Plex+Mono:wght@500;600;700&display=swap');
         @keyframes pulse{0%,100%{opacity:1;}50%{opacity:0.3;}}
-        @keyframes pulseDot{0%,100%{opacity:1;}50%{opacity:0.35;}}
         @keyframes spin{from{transform:rotate(0deg);}to{transform:rotate(360deg);}}
+        @keyframes realDataGlow{
+          0%,100%{box-shadow:0 0 8px rgba(255,60,0,0.35), 0 0 18px rgba(255,110,0,0.18), inset 0 0 8px rgba(255,90,0,0.15);}
+          50%{box-shadow:0 0 16px rgba(255,80,0,0.6), 0 0 34px rgba(255,140,0,0.32), inset 0 0 12px rgba(255,110,0,0.25);}
+        }
+        @keyframes realFlow{
+          0%{background-position:0% 50%;}
+          50%{background-position:100% 50%;}
+          100%{background-position:0% 50%;}
+        }
+        @keyframes flameFlick{
+          0%,100%{transform:scale(1) rotate(-3deg);filter:brightness(1) drop-shadow(0 0 3px rgba(255,120,0,0.85));}
+          30%{transform:scale(1.18) rotate(3deg);filter:brightness(1.35) drop-shadow(0 0 6px rgba(255,165,0,0.95));}
+          60%{transform:scale(0.94) rotate(-2deg);filter:brightness(1.1) drop-shadow(0 0 4px rgba(255,90,0,0.85));}
+        }
       `}</style>
       <ParlayBuilder
         picks={parlayPicks}
