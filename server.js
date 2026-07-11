@@ -140,18 +140,22 @@ function bdlPlayed(row, lg) {
 
 // MLB / WNBA: player-centric stats endpoint. MLB needs the date join described
 // above; WNBA carries game.date already.
+// Returns BOTH `games` (last 15, what the card displays) and `gamesFull` (up to
+// 40, what the scoring engine uses for season averages and volatility). The
+// scoring engine needs the longer window: you cannot detect a shaded line
+// without knowing what the player's normal season looks like.
 async function ballGamelog(player, lg, sport) {
   const searchTerm = player.trim().split(' ').slice(-1)[0]
   const pData = await bdlFetch(`https://api.balldontlie.io/${sport.path}/v1/players?search=${encodeURIComponent(searchTerm)}`)
   const players = pData.data || []
-  if (players.length === 0) return { player, league: lg, games: [], note: 'Player not found in stats database.' }
+  if (players.length === 0) return { player, league: lg, games: [], gamesFull: [], note: 'Player not found in stats database.' }
 
   const lowerFull = player.trim().toLowerCase()
   let match = players.find(p => `${p.first_name} ${p.last_name}`.toLowerCase() === lowerFull)
   if (!match) match = players.find(p => (p.full_name || '').toLowerCase() === lowerFull)
   if (!match) match = players[0]
 
-  let games = []
+  let gamesFull = []
   if (sport.needsGameDates) {
     const teamId = match.team && match.team.id
     if (teamId) {
@@ -162,26 +166,28 @@ async function ballGamelog(player, lg, sport) {
       // The player's full season stat rows, using single-value params that the
       // API honors reliably (the old game_ids[] list collapsed to one game).
       const statRows = await bdlFetchAll(`https://api.balldontlie.io/${sport.path}/v1/${sport.statsPath}?player_ids[]=${match.id}&seasons[]=${sport.season}&per_page=100`)
-      games = statRows
+      gamesFull = statRows
         .filter(g => bdlPlayed(g, lg))
         .map(g => ({ ...g, date: dateMap[g.game_id] || null }))
         .filter(g => g.date) // regular season only (spring training game_ids aren't in the map)
         .sort((a, b) => new Date(b.date) - new Date(a.date))
-        .slice(0, 15)
+        .slice(0, 40)
     }
   } else {
     const sData = await bdlFetch(`https://api.balldontlie.io/${sport.path}/v1/${sport.statsPath}?player_ids[]=${match.id}&seasons[]=${sport.season}&per_page=100`)
-    games = (sData.data || [])
+    gamesFull = (sData.data || [])
       .filter(g => bdlPlayed(g, lg))
       .map(g => ({ ...g, date: rowDate(g) }))
       .sort((a, b) => gameSortKey(b) - gameSortKey(a))
-      .slice(0, 15)
+      .slice(0, 40)
   }
+  const games = gamesFull.slice(0, 15)
   return {
     player: `${match.first_name} ${match.last_name}`,
     player_id: match.id,
     league: lg,
     games,
+    gamesFull,
     note: games.length ? `${games.length} recent games from BALLDONTLIE.` : 'No recent games found for this season.'
   }
 }
@@ -518,11 +524,115 @@ async function getGamelog(player, lg) {
   return payload
 }
 
+// ===== SCORING ENGINE v2 — analyze first, rate after =====
+// Raw hit rate is no longer the model. It is one input. Every verifiable prop
+// is scored from three weighted components plus a trap detector:
+//
+//   1) SHRUNK HIT RATE (45%) — the recent hit rate pulled toward 50% based on
+//      sample size. 14 of 15 raw is 93%, but 15 games is a tiny sample, so it
+//      shrinks to ~76%. A streak can no longer masquerade as a lock.
+//   2) PROJECTION EDGE (35%) — blended season + last-10 average vs the line,
+//      normalized by the player's own game-to-game volatility. This is the
+//      question that actually matters: is the LINE beatable, not was it beaten.
+//   3) AVAILABILITY (20%) — their last logged game must be recent. A player
+//      who hasn't appeared in days is an injury/rest risk and cannot gold.
+//
+//   TRAP DETECTOR — an 85%+ streak over the last 15 combined with a line set
+//   well past the player's season average means the book has already priced
+//   the streak in. Constant greens are the eye candy PrizePicks wants bettors
+//   chasing. Those picks get flagged trapRisk, penalized 20 points, and are
+//   never gold-eligible.
+//
+// Tunable knobs, all in one place:
+const SHRINK_PRIOR = 10           // phantom 50/50 games blended into the hit rate
+const TRAP_STREAK = 0.85          // recent-15 hit rate that counts as eye candy
+const TRAP_LINE_INFLATION = 1.12  // line 12%+ past the season avg = book adjusted
+const W_HITRATE = 0.45
+const W_EDGE = 0.35
+const W_AVAIL = 0.20
+
+function mean(a) { return a.length ? a.reduce((s, v) => s + v, 0) / a.length : 0 }
+function stdev(a) {
+  if (a.length < 2) return 1
+  const m = mean(a)
+  return Math.sqrt(a.reduce((s, v) => s + (v - m) * (v - m), 0) / (a.length - 1))
+}
+
+// games must be sorted most-recent-first. Returns null when the prop can't be
+// verified from real data (unmapped stat, or fewer than 10 usable games).
+function scoreProp(games, league, statLabel, L) {
+  const rows = (games || [])
+    .map(g => ({ v: bdlStatValueServer(league, g, statLabel), date: g.date || null }))
+    .filter(r => r.v != null && !isNaN(r.v))
+  if (rows.length < 10) return null
+
+  const vals = rows.map(r => r.v)
+  const recent15 = vals.slice(0, 15)
+  const recent10 = vals.slice(0, 10)
+
+  const seasonMean = mean(vals)             // up to 40 games of context
+  const recentMean = mean(recent10)
+  const proj = 0.6 * seasonMean + 0.4 * recentMean
+  const sd = Math.max(stdev(vals), 0.5)     // floor so tiny-variance stats don't explode the edge
+
+  // Pre-streak baseline for the trap check. The hot streak itself inflates
+  // the season mean, so comparing the line against it would hide exactly the
+  // shading we're hunting. Games OLDER than the last 15 are the player's true
+  // level before the book started chasing the streak. Fewer than 8 older
+  // games: fall back to the season mean (early-season, nothing better exists).
+  const older = vals.slice(15)
+  const baseline = older.length >= 8 ? mean(older) : seasonMean
+
+  // Availability proxy: last logged game must be recent for this sport's cadence.
+  const withDate = rows.find(r => r.date)
+  const staleDays = league === 'MLB' ? 4 : 7
+  let avail = 0.7 // rows without dates: neither credit nor kill it
+  if (withDate) {
+    const daysSince = (Date.now() - new Date(withDate.date).getTime()) / 86400000
+    avail = daysSince <= staleDays ? 1 : 0.4
+  }
+
+  const sides = ['HIGHER', 'LOWER'].map(dir => {
+    const hits15 = recent15.filter(v => dir === 'HIGHER' ? v > L : v < L).length
+    const rawRecent = hits15 / recent15.length
+    const shrunk = (hits15 + SHRINK_PRIOR * 0.5) / (recent15.length + SHRINK_PRIOR)
+    const edgeRaw = dir === 'HIGHER' ? proj - L : L - proj
+    const edgeScore = Math.max(-1, Math.min(1, edgeRaw / sd))
+    // Trap: hot streak AND the line already shaded past the pre-streak
+    // baseline in the streak's direction. That combination = the book moved first.
+    const inflated = dir === 'HIGHER'
+      ? L >= baseline * TRAP_LINE_INFLATION
+      : L <= baseline * (2 - TRAP_LINE_INFLATION)
+    const trap = rawRecent >= TRAP_STREAK && inflated
+    let score = 100 * (W_HITRATE * shrunk + W_EDGE * (0.5 + edgeScore / 2) + W_AVAIL * avail)
+    if (trap) score -= 20
+    if (edgeRaw <= 0) score -= 8 // hit-rate side contradicts the projection
+    return { dir, score, rawRecent, hits15, n15: recent15.length, trap, edgeRaw }
+  })
+
+  sides.sort((a, b) => b.score - a.score)
+  const best = sides[0]
+  return {
+    dir: best.dir,
+    score: Math.max(1, Math.min(99, Math.round(best.score))),
+    hit: best.hits15,
+    total: best.n15,
+    rawPct: Math.round(best.rawRecent * 100),
+    trap: best.trap,
+    proj: Math.round(proj * 10) / 10,
+    seasonAvg: Math.round(seasonMean * 10) / 10,
+    baseline: Math.round(baseline * 10) / 10,
+    edge: Math.round(best.edgeRaw * 10) / 10,
+    avail,
+    // Gold demands everything: no trap, projection agrees, player active.
+    goldEligible: !best.trap && best.edgeRaw > 0 && avail === 1
+  }
+}
+
 // The fix for AI direction contradicting the data. For MLB/WNBA picks with a
-// real sample, the direction and confidence come from the game logs, not the
-// AI's blind guess. We bet the side the player actually hits more often, and
-// the confidence IS the real hit rate. Picks with fewer than 10 games are left
-// alone (the card hides their chart anyway).
+// real sample, direction and confidence come from the scoring engine, not the
+// AI's blind guess. Picks with fewer than 10 verifiable games are left alone
+// (the card hides their chart anyway).
 const REAL_GROUND_LEAGUES = ['MLB', 'WNBA']
 async function groundPicks(picks) {
   await Promise.all(picks.map(async p => {
@@ -532,23 +642,24 @@ async function groundPicks(picks) {
       const L = parseFloat(p.val)
       if (isNaN(L)) return
       const gl = await getGamelog(p.name, lg)
-      const vals = ((gl && gl.games) || [])
-        .map(g => bdlStatValueServer(lg, g, p.stat))
-        .filter(v => v != null && !isNaN(v))
-      if (vals.length < 10) return
-      const over = vals.filter(v => v > L).length
-      const under = vals.filter(v => v < L).length
-      const total = vals.length
-      const dir = over >= under ? 'HIGHER' : 'LOWER'
-      const hit = dir === 'HIGHER' ? over : under
-      const pct = Math.round((hit / total) * 100)
-      p.dir = dir
-      p.conf = pct
-      p.realHit = hit
-      p.realTotal = total
-      p.record = `${hit} of last ${total} games cleared this line`
-      p.bull = `Real game logs back the ${dir === 'HIGHER' ? 'over' : 'under'} here. The line was cleared in ${hit} of the last ${total} games (${pct}%).`
-      p.bear = `This is the last ${total} games only. A tough matchup, a lineup or rotation change, or a short rest day could move it.`
+      const games = (gl && (gl.gamesFull || gl.games)) || []
+      const s = scoreProp(games, lg, p.stat, L)
+      if (!s) return
+      p.dir = s.dir
+      p.conf = s.score
+      p.realHit = s.hit
+      p.realTotal = s.total
+      p.trapRisk = s.trap || undefined
+      p.proj = s.proj
+      p.seasonAvg = s.seasonAvg
+      p.record = `${s.hit} of last ${s.total} cleared · projects ${s.proj} vs line ${L}`
+      if (s.trap) {
+        p.bull = `The streak is real (${s.hit} of ${s.total}) but the line has been raised to the streak, not the player. His baseline before the hot stretch is ${s.baseline}.`
+        p.bear = `TRAP RISK: this line sits well above his baseline of ${s.baseline}. The book has priced the hot stretch in, and regression usually follows.`
+      } else {
+        p.bull = `Model backs the ${s.dir === 'HIGHER' ? 'over' : 'under'}: projects ${s.proj} against ${L} (${s.edge > 0 ? '+' : ''}${s.edge} edge), with ${s.hit} of the last ${s.total} clearing it.`
+        p.bear = `Season average is ${s.seasonAvg}. A tough matchup, lineup change, or rest day can move this. Confidence is already shrunk for the short sample.`
+      }
     } catch (e) { /* leave the pick untouched on any error */ }
   }))
   return picks
@@ -567,52 +678,62 @@ async function mapLimit(items, limit, fn) {
   await Promise.all(workers)
 }
 
-// Gold floor for real-data leagues. Tunable: 90 is strict, 80 gives more volume
-// while still meaning a strong real hit rate.
-// Gold floor for real-data leagues. WNBA gets a lower bar than MLB since its
-// slates are smaller and harder to clear a strict number on. This single
-// function is the ONLY source of truth, used by the scanner, the AI fallback,
-// and the final gate, so the three can never disagree again.
+// Gold floor per league, applied to the COMPOSITE score (not raw hit rate).
+// The composite is deliberately harder to max out: a genuinely strong pick
+// lands ~80-90, a decent one ~70-75, a trap lands in the 30s-50s. WNBA keeps
+// a slightly lower bar since its slates are smaller. This function is the
+// ONLY source of truth, used by the scanner, the AI fallback, and the final
+// gate, so the three can never disagree.
 function goldFloorFor(lg) {
   if (lg === 'WNBA') return 70
-  if (lg === 'MLB') return 80
+  if (lg === 'MLB') return 75
   return 90
 }
 
-// Build a frontend-shaped pick straight from real game-log math.
-function buildRealPick(l, lg, dir, hit, total, pct) {
+// Build a frontend-shaped pick straight from the scoring engine's output.
+function buildRealPick(l, lg, s) {
   const name = l.name
   const initials = (name || 'XX').split(' ').map(w => w[0]).join('').substring(0, 2).toUpperCase()
-  const ou = dir === 'HIGHER' ? 'over' : 'under'
+  const ou = s.dir === 'HIGHER' ? 'over' : 'under'
+  const trapBull = `The streak is real (${s.hit} of ${s.total}) but the line has been raised to the streak, not the player. His baseline before the hot stretch is ${s.baseline}.`
+  const trapBear = `TRAP RISK: this line sits well above his baseline of ${s.baseline}. The book has priced the hot stretch in, and regression usually follows.`
+  const normBull = `Model backs the ${ou}: projects ${s.proj} against ${l.line} (${s.edge > 0 ? '+' : ''}${s.edge} edge), with ${s.hit} of the last ${s.total} clearing it.`
+  const normBear = `Season average is ${s.seasonAvg}. A tough matchup, lineup change, or rest day can move this. Confidence is already shrunk for the short sample.`
   return {
     id: `real-${lg}-${name}-${l.stat}-${l.line}`.replace(/\s+/g, '_'),
     name,
     meta: `${lg}${l.team ? ' · ' + l.team : ''}`,
     stat: l.stat,
     val: String(l.line),
-    dir,
-    conf: pct,
+    dir: s.dir,
+    conf: s.score,
     sport: lg,
     league: lg,
     initials,
     image: l.image || null,
-    bull: `Real game logs back the ${ou}. The line was cleared in ${hit} of the last ${total} games (${pct}%).`,
-    bear: `Based on the last ${total} games. A tough matchup, a lineup or rotation change, or a rest day could move it.`,
-    record: `${hit} of last ${total} games cleared this line`,
-    cats: [{ n: l.stat, p: pct }],
+    bull: s.trap ? trapBull : normBull,
+    bear: s.trap ? trapBear : normBear,
+    record: `${s.hit} of last ${s.total} cleared · projects ${s.proj} vs line ${l.line}`,
+    cats: [{ n: l.stat, p: s.score }],
     time: l.start_time || null,
     date: l.date || null,
     oddsType: l.oddsType || null,
     altLines: l.altLines || null,
-    realHit: hit,
-    realTotal: total
+    realHit: s.hit,
+    realTotal: s.total,
+    trapRisk: s.trap || undefined,
+    proj: s.proj,
+    seasonAvg: s.seasonAvg
   }
 }
 
 // The real engine for MLB/WNBA. Walk the actual slate, pull ONE gamelog per
-// player, and for every verifiable prop compute the true hit rate and the side
-// that hits more. Returns built picks at or above floorPct, strongest first.
-async function realScan(lines, league, floorPct, maxPerPlayer = 2, maxTotal = 20) {
+// player, score every verifiable prop through the v2 engine, and return picks
+// at or above floorPct, strongest first. When requireGoldEligible is true
+// (the /gold route), traps, negative-edge picks, and availability question
+// marks are excluded entirely — the Tonight board still shows them with their
+// penalized score and TRAP language so users learn what a shaded line looks like.
+async function realScan(lines, league, floorPct, maxPerPlayer = 2, maxTotal = 20, requireGoldEligible = false) {
   const lg = league.toUpperCase()
   const cands = (lines || []).filter(l =>
     (l.league || '').toUpperCase() === lg && l.name && l.stat && l.line != null &&
@@ -628,7 +749,7 @@ async function realScan(lines, league, floorPct, maxPerPlayer = 2, maxTotal = 20
   await mapLimit(names, 8, async name => {
     try {
       const gl = await getGamelog(name, lg)
-      const games = (gl && gl.games) || []
+      const games = (gl && (gl.gamesFull || gl.games)) || []
       if (games.length < 10) return
       const picks = []
       const seenStat = new Set()
@@ -637,22 +758,12 @@ async function realScan(lines, league, floorPct, maxPerPlayer = 2, maxTotal = 20
         if (seenStat.has(statKey)) continue
         const L = parseFloat(l.line)
         if (isNaN(L)) continue
-        const vals = games.map(g => bdlStatValueServer(lg, g, l.stat)).filter(v => v != null && !isNaN(v))
-        if (vals.length < 10) continue
+        const s = scoreProp(games, lg, l.stat, L)
+        if (!s) continue
         seenStat.add(statKey)
-        const over = vals.filter(v => v > L).length
-        const under = vals.filter(v => v < L).length
-        const total = vals.length
-        const dir = over >= under ? 'HIGHER' : 'LOWER'
-        const hit = dir === 'HIGHER' ? over : under
-        const pct = Math.round((hit / total) * 100)
-        if (pct < floorPct) continue
-        // A perfect read is only suspicious if it came from a bug. Combo props
-        // (two players) and fantasy scores, the two things that used to fake a
-        // 100%, are already excluded above and in bdlStatValueServer. A single,
-        // correctly-mapped stat genuinely clearing every game (common on low
-        // MLB lines like Hits 0.5) is real evidence, not an error.
-        picks.push(buildRealPick(l, lg, dir, hit, total, pct))
+        if (s.score < floorPct) continue
+        if (requireGoldEligible && !s.goldEligible) continue
+        picks.push(buildRealPick(l, lg, s))
       }
       picks.sort((a, b) => b.conf - a.conf)
       collected.push(...picks.slice(0, maxPerPlayer))
@@ -662,6 +773,176 @@ async function realScan(lines, league, floorPct, maxPerPlayer = 2, maxTotal = 20
   collected.sort((a, b) => b.conf - a.conf)
   return collected.slice(0, maxTotal)
 }
+
+// Log every gold pick to Supabase so the model's real record is tracked over
+// time. Fire-and-forget: a missing table or a network blip never blocks the
+// response. Duplicate calls on the same slate are absorbed by the unique
+// constraint (player, stat, line, dir, game_date).
+async function logGoldPicks(picks) {
+  if (!picks || !picks.length) return
+  try {
+    const today = new Date().toISOString().slice(0, 10)
+    const rows = picks.map(p => ({
+      player: p.name,
+      league: p.league,
+      stat: p.stat,
+      line: parseFloat(p.val) || null,
+      dir: p.dir,
+      score: p.conf,
+      real_hit: p.realHit ?? null,
+      real_total: p.realTotal ?? null,
+      trap: !!p.trapRisk,
+      analysis_status: p.analysisStatus || null,
+      game_date: p.date || today
+    }))
+    await supabaseAdmin.from('gold_pick_log').upsert(rows, {
+      onConflict: 'player,stat,line,dir,game_date',
+      ignoreDuplicates: true
+    })
+  } catch (e) {
+    console.error('Pick log skipped:', e.message)
+  }
+}
+
+// ===== GOLD AUTO-ANALYSIS =====
+// After the scoring engine selects gold candidates, a single web-search pass
+// checks tonight's reality for each one: opponent, injury/lineup status,
+// anything the game logs can't see. The model NEVER re-rates picks itself.
+// It returns a status per player and the SERVER applies the adjustment:
+//   CONFIRMED — found active/starting tonight, no red flags. Rating stands,
+//               pick is pairing-eligible.
+//   CAUTION   — questionable tag, bad matchup news, or no status found.
+//               Rating -10, stays on the board, excluded from pairings.
+//   OUT       — ruled out or team not playing. Pick removed entirely.
+const ANALYZE_TOP_N = 12
+
+async function analyzeGoldPicks(picks, currentTime) {
+  const targets = picks.slice(0, ANALYZE_TOP_N)
+  if (!targets.length) return picks
+  const list = targets.map(p =>
+    `- ${p.name} (${p.league}${p.team ? ' · ' + p.team : ''}): ${p.stat} ${p.dir === 'HIGHER' ? 'over' : 'under'} ${p.val}`
+  ).join('\n')
+
+  const userMsg = `Current time: ${currentTime || new Date().toISOString()} ET
+
+These are tonight's model-selected picks. For EACH player, search for who they play today or tonight and their current injury or lineup status. Base status ONLY on what you actually find in search results, never on memory.
+
+${list}
+
+Status rules:
+- "CONFIRMED": you found evidence they are active/starting tonight with no injury designation
+- "CAUTION": questionable or day-to-day tag, unfavorable news (elite opposing pitcher, minutes concern, weather delay risk), OR you could not find current status
+- "OUT": ruled out, not in the lineup, or their team does not play in the next 36 hours
+
+Respond with ONLY this JSON array as your final message, nothing before or after it, no markdown fences:
+[{"name":"exact player name from the list","status":"CONFIRMED","note":"1 sentence: opponent tonight and what you found"}]`
+
+  let messages = [{ role: 'user', content: userMsg }]
+  let finalText = ''
+  try {
+    for (let i = 0; i < 6; i++) {
+      const r = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-api-key': API_KEY, 'anthropic-version': '2023-06-01' },
+        body: JSON.stringify({
+          model: 'claude-sonnet-4-6',
+          max_tokens: 3000,
+          tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 14 }],
+          system: `You verify sports betting picks against tonight's reality. Use web search for every player on the list. Never state injury or lineup information you did not actually find via search. Output ONLY the requested JSON array as your final answer, nothing else.`,
+          messages
+        })
+      })
+      const data = await r.json()
+      if (!data.content) throw new Error(data.error?.message || 'No content')
+      finalText += data.content.filter(b => b.type === 'text').map(b => b.text).join('\n')
+      if (data.stop_reason === 'pause_turn') {
+        messages = [...messages, { role: 'assistant', content: data.content }]
+        continue
+      }
+      break
+    }
+  } catch (e) {
+    console.error('Gold analysis skipped:', e.message)
+    return picks // an analysis failure must never blank the gold board
+  }
+
+  const start = finalText.indexOf('[')
+  const end = finalText.lastIndexOf(']')
+  if (start === -1 || end === -1) return picks
+  let results
+  try { results = JSON.parse(finalText.slice(start, end + 1)) } catch (e) { return picks }
+  const byName = {}
+  results.forEach(r => { if (r && r.name) byName[r.name.toLowerCase()] = r })
+
+  const out = []
+  for (const p of picks) {
+    const r = byName[(p.name || '').toLowerCase()]
+    if (!r) { p.analysisStatus = 'UNANALYZED'; out.push(p); continue }
+    const status = String(r.status || '').toUpperCase()
+    const note = r.note || ''
+    if (status === 'OUT') { console.log('Dropped (OUT):', p.name, '-', note); continue }
+    p.baseScore = p.conf
+    p.analysisNote = note || null
+    if (status === 'CONFIRMED') {
+      p.analysisStatus = 'CONFIRMED'
+      if (note) p.bull = `${p.bull} Verified tonight: ${note}`
+    } else {
+      p.analysisStatus = 'CAUTION'
+      p.conf = Math.max(1, p.conf - 10)
+      p.cats = [{ n: p.stat, p: p.conf }]
+      if (note) p.bear = `CAUTION: ${note} ${p.bear}`
+    }
+    out.push(p)
+  }
+  return out
+}
+
+// ===== PAIRING ENGINE =====
+// The strongest 2-man combos, built ONLY from analysis-CONFIRMED picks.
+// Rules: never two legs from the same team (one bad team night kills both),
+// prefer legs from different leagues/games for independence, rank by the
+// combined rate treating legs as independent. A 2-leg Power Play pays 3x,
+// so the breakeven is ~33% combined. Anything shown well above that is a
+// genuine edge IF the ratings are honest, which is the whole point of v2.
+function teamOf(p) {
+  if (p.team) return String(p.team).toUpperCase()
+  const parts = String(p.meta || '').split('·')
+  return parts.length > 1 ? parts[1].trim().toUpperCase() : null
+}
+
+function buildPairs(picks, maxPairs = 3) {
+  const elig = picks.filter(p => p.analysisStatus === 'CONFIRMED')
+  const pairs = []
+  for (let i = 0; i < elig.length; i++) {
+    for (let j = i + 1; j < elig.length; j++) {
+      const a = elig[i], b = elig[j]
+      const ta = teamOf(a), tb = teamOf(b)
+      if (ta && tb && ta === tb) continue // same team = correlated failure
+      const combined = Math.round((a.conf / 100) * (b.conf / 100) * 100)
+      const sameSlot = a.league === b.league && a.time && a.time === b.time
+      const rank = combined + (a.league !== b.league ? 2 : 0) - (sameSlot ? 3 : 0)
+      pairs.push({
+        rank,
+        combined,
+        legs: [a, b].map(p => ({
+          id: p.id, name: p.name, league: p.league, team: teamOf(p),
+          stat: p.stat, val: p.val, dir: p.dir, conf: p.conf
+        })),
+        why: `${a.name} (${a.conf}) + ${b.name} (${b.conf})` +
+          (a.league !== b.league ? ' · independent leagues' : '') +
+          (sameSlot ? ' · may share a game window' : '')
+      })
+    }
+  }
+  pairs.sort((x, y) => y.rank - x.rank)
+  return pairs.slice(0, maxPairs).map(({ rank, ...p }) => p)
+}
+
+// Gold responses are cached per league so the tab opens instantly after the
+// first build. The full pipeline (scan -> analyze -> pair) runs at most once
+// per 30 minutes per league.
+let goldCache = {}
+const GOLD_CACHE_TTL = 30 * 60 * 1000
 
 // AI pick generation for sports WITHOUT real data. MLB/WNBA are handled by the
 // scanner and excluded here.
@@ -756,10 +1037,11 @@ app.post('/picks', async (req, res) => {
     const REAL = ['MLB', 'WNBA']
     let picks = []
 
-    // Real-data scanner for MLB/WNBA (lower floor than gold so the board has range).
+    // Real-data scanner for MLB/WNBA (lower floor than gold so the board has
+    // range — traps show up here with their penalized score and TRAP language).
     const scanLgs = reqLeague ? (REAL.includes(reqLeague) ? [reqLeague] : []) : REAL
     for (const lg of scanLgs) {
-      const scanned = await realScan(rawLines, lg, 60, 2, 15)
+      const scanned = await realScan(rawLines, lg, 60, 2, 15, false)
       picks = picks.concat(scanned)
       // If WNBA real scanner is empty (e.g. all combo props), fall through to AI
       // so the board still has WNBA cards.
@@ -782,7 +1064,7 @@ app.post('/picks', async (req, res) => {
 
     picks.sort((a, b) => b.conf - a.conf)
     picks = picks.slice(0, 40)
-    console.log('Got', picks.length, 'picks (', picks.filter(p => REAL.includes(p.league)).length, 'real )')
+    console.log('Got', picks.length, 'picks (', picks.filter(p => REAL.includes(p.league)).length, 'real,', picks.filter(p => p.trapRisk).length, 'flagged trap )')
     res.json({ picks })
   } catch (e) {
     console.error('Picks error:', e.message)
@@ -793,6 +1075,15 @@ app.post('/picks', async (req, res) => {
 app.post('/gold', async (req, res) => {
   try {
     const { currentTime, lines: rawLines, league } = req.body
+
+    // Serve from cache when the full pipeline ran recently for this league.
+    const goldKey = (league || 'ALL').toUpperCase()
+    const gc = goldCache[goldKey]
+    if (gc && Date.now() - gc.ts < GOLD_CACHE_TTL) {
+      console.log('Serving gold from cache for', goldKey)
+      return res.json(gc.data)
+    }
+
     const lines = sortLines(rawLines, league)
     console.log('Finding gold from', lines?.length, 'lines for league:', league || 'ALL')
     if (!lines || lines.length === 0) throw new Error('No lines provided')
@@ -801,15 +1092,17 @@ app.post('/gold', async (req, res) => {
     const REAL = ['MLB', 'WNBA']
     let picks = []
 
-    // Gold from real data: strongest verified plays. WNBA gets a slightly lower
-    // floor (70) since its slates are smaller and single-player lines can be sparse.
+    // Gold from real data: strongest verified plays, gold-eligible only. That
+    // means no trap flags, projection must agree with the streak side, and the
+    // player must have appeared recently. The board earns its gold now.
     const scanLgs = reqLeague ? (REAL.includes(reqLeague) ? [reqLeague] : []) : REAL
     for (const lg of scanLgs) {
       const floor = goldFloorFor(lg)
-      const scanned = await realScan(rawLines, lg, floor, 2)
+      const scanned = await realScan(rawLines, lg, floor, 2, 20, true)
       picks = picks.concat(scanned)
       // If real scanner came back empty for WNBA (e.g. all combo props tonight),
-      // fall back to AI so the board isn't blank.
+      // fall back to AI so the board isn't blank. Grounding still rescores any
+      // verifiable pick through the same engine, and traps are stripped below.
       if (lg === 'WNBA' && scanned.length === 0) {
         const wnbaLines = rawLines.filter(l => (l.league || '').toUpperCase() === 'WNBA')
         if (wnbaLines.length > 0) {
@@ -828,13 +1121,36 @@ app.post('/gold', async (req, res) => {
       picks = picks.concat(aiGold.filter(p => p.conf >= 90)) // non-real sports keep the 90% bar
     }
 
-    // Final gate: every pick must clear its floor regardless of how it got here.
-    picks = picks.filter(p => p.conf >= goldFloorFor((p.league || '').toUpperCase()))
+    // Final gate: every pick must clear its floor AND carry no trap flag,
+    // regardless of how it got here.
+    picks = picks.filter(p => p.conf >= goldFloorFor((p.league || '').toUpperCase()) && !p.trapRisk)
 
     picks.sort((a, b) => b.conf - a.conf)
     picks = picks.slice(0, 30)
-    console.log('Got', picks.length, 'gold picks (', picks.filter(p => REAL.includes(p.league)).length, 'real )')
-    res.json({ picks })
+    console.log('Got', picks.length, 'gold picks (', picks.filter(p => REAL.includes(p.league)).length, 'real ) — analyzing tonight\'s status')
+
+    // Stage 2: auto-verify tonight's reality (opponent, injuries, lineups) for
+    // the top picks, then re-rate. OUT picks are removed, CAUTION picks are
+    // docked 10 and blocked from pairing, CONFIRMED picks keep their rating
+    // and earn a verified note on the card.
+    picks = await analyzeGoldPicks(picks, currentTime)
+    picks.sort((a, b) => b.conf - a.conf)
+
+    // Stage 3: the strongest 2-man pairings from confirmed legs only.
+    const pairs = buildPairs(picks)
+
+    console.log('Final board:', picks.length, 'picks,',
+      picks.filter(p => p.analysisStatus === 'CONFIRMED').length, 'confirmed,',
+      picks.filter(p => p.analysisStatus === 'CAUTION').length, 'caution,',
+      pairs.length, 'pairings')
+
+    // Track the record: every gold pick that reaches the board gets logged
+    // with its FINAL (post-analysis) rating.
+    logGoldPicks(picks)
+
+    const payload = { picks, pairs }
+    goldCache[goldKey] = { data: payload, ts: Date.now() }
+    res.json(payload)
   } catch (e) {
     console.error('Gold error:', e.message)
     res.status(500).json({ error: e.message })
@@ -861,7 +1177,7 @@ app.post('/chat', async (req, res) => {
           model: 'claude-sonnet-4-6',
           max_tokens: 4000,
           tools: [{ type: 'web_search_20250305', name: 'web_search' }],
-          system: `You are the Trip Predicts AI analyst for PrizePicks. You have real live prop lines provided to you. Always use the exact line numbers from the data — never change them. Prioritize NBA, MLB, NHL, NFL, and esports. Only recommend WNBA or niche sports if explicitly asked. Look for clear statistical edges — recent form, matchup advantages, usage rates, pace of play. Only recommend picks from games in the next 36 hours. Never recommend the same player twice. Spread picks across multiple sports — never more than 2 from the same league. When recommending direction, commit to it based on data. Tiers: Regular below 75%, High 75-89%, GOLD 90%+. Never use em dashes. Bold key info with **text**.`,
+          system: `You are the Trip Predicts AI analyst for PrizePicks. You have real live prop lines provided to you. Always use the exact line numbers from the data — never change them. Prioritize NBA, MLB, NHL, NFL, and esports. Only recommend WNBA or niche sports if explicitly asked. Look for clear statistical edges — recent form, matchup advantages, usage rates, pace of play. Be suspicious of hot streaks: a player who has cleared a line in 13 or 14 of his last 15 games usually has a line that was already raised to match the streak, which makes it a regression trap, not a lock. Only recommend picks from games in the next 36 hours. Never recommend the same player twice. Spread picks across multiple sports — never more than 2 from the same league. When recommending direction, commit to it based on data. Tiers: Regular below 75%, High 75-89%, GOLD 90%+. Never use em dashes. Bold key info with **text**.`,
           messages: current
         })
       })
@@ -901,11 +1217,12 @@ app.post('/parlay-analysis', async (req, res) => {
 
     let combinedRate = 1
     let allRatesKnown = true
+    const trapLegs = picks.filter(p => p.trapRisk).map(p => p.name)
     const legContext = picks.map(p => {
       let rate = null, rateLabel = 'unknown'
       if (p.realHit != null && p.realTotal) {
         rate = p.realHit / p.realTotal
-        rateLabel = `${p.realHit} of last ${p.realTotal} games hit this line, verified real BALLDONTLIE data`
+        rateLabel = `${p.realHit} of last ${p.realTotal} games hit this line, verified real BALLDONTLIE data${p.trapRisk ? ' — FLAGGED AS TRAP RISK: line sits well above this player\'s season average, the book has priced the streak in' : ''}`
       } else if (p.conf != null) {
         rate = p.conf / 100
         rateLabel = `${p.conf}% per the AI model, NOT independently verified against game logs`
@@ -927,6 +1244,7 @@ ${legContext}
 ${combinedPct != null
   ? `The combined hit rate if every leg is independent is ${combinedPct}%, calculated directly from the historical rates above. Reference this exact number in your summary. Do not calculate or state a different one.`
   : `Not every leg has a verified historical rate, so no combined number was calculated. Do not invent one.`}
+${trapLegs.length ? `\nThe following legs are flagged TRAP RISK and the verdict cannot be "Strong" while any of them remain: ${trapLegs.join(', ')}.` : ''}
 
 For EACH player, search for who they are playing today or tonight and their current injury or lineup status. State status information only when you actually find it in a search result. If you cannot confirm current status, say so plainly, for example "no recent injury report found," instead of guessing from memory.
 

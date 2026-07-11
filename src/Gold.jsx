@@ -29,32 +29,32 @@ const LEAGUE_COLORS = {
 }
 
 const STEP_LABELS = [
-  ['CONNECTING', 'SCANNING LINES', 'GOLD FILTER', 'VERIFYING EDGE'],
-  ['STARTING SCAN', 'LIVE PROPS', 'CONFIDENCE CHECK', 'ELITE PLAYS'],
-  ['GOING LIVE', 'FULL SCAN', 'HUNTING EDGES', 'FINAL CUT'],
-  ['POWERING UP', 'REAL-TIME LINES', 'DEEP ANALYSIS', 'LOCKING GOLD'],
-  ['BOOTING SCAN', 'LOADING DATA', 'WEIGHING FORM', 'GOLD BOARD'],
+  ['CONNECTING', 'SCANNING LINES', 'TRAP FILTER', 'VERIFYING TONIGHT'],
+  ['STARTING SCAN', 'LIVE PROPS', 'SCORING EDGES', 'CHECKING LINEUPS'],
+  ['GOING LIVE', 'FULL SCAN', 'HUNTING EDGES', 'STATUS CHECK'],
+  ['POWERING UP', 'REAL-TIME LINES', 'DEEP ANALYSIS', 'PAIRING LEGS'],
+  ['BOOTING SCAN', 'LOADING DATA', 'WEIGHING FORM', 'FINAL VERIFY'],
 ]
 
 const FACTS = [
   'Gold picks are the rarest plays on the board. Most sessions only have 1 or 2.',
-  'The bar for gold is 80%+ confidence. 90%+ for non-real-data sports.',
+  'Gold means clearing the score floor, the trap filter, AND tonight\'s status check.',
   'Over 250 live props are scanned every load to find the few that truly qualify.',
-  'When gold picks hit they carry real conviction behind every number.',
-  'Hot streak plus weak opponent plus high usage is the gold formula.',
-  'Gold picks are shown separately because they deserve a different kind of attention.',
-  'Recent form matters more than season averages when it comes to prop bets.',
-  'The AI scores every line from 50 to 95. Gold means 90 or above.',
-  'If the confidence is not there, no pick is made. Quality always beats quantity.',
-  'MLB and WNBA picks are now backed by real game-by-game data from BALLDONTLIE.',
+  'Streak traps are filtered out. A 14 of 15 run on a raised line is bait, not value.',
+  'Ratings are shrunk for sample size, so a short hot streak can never fake a lock.',
+  'Every top pick is verified against tonight\'s slate: opponent, lineup, injury status.',
+  'A player ruled out or missing from the lineup is removed from the board entirely.',
+  'Best Pairings shows the strongest 2-man combos, built from verified legs only.',
+  'Two legs from the same team never get paired. One bad team night kills both.',
+  'A 2-leg Power Play pays 3x, so anything above 33% combined is a real edge.',
+  'MLB and WNBA picks are backed by real game-by-game data from BALLDONTLIE.',
   'Lines are fetched fresh every time so you never see stale or outdated props.',
-  'The AI never defaults to HIGHER. Direction is set by the data every time.',
+  'The model scores the LINE, not the streak. Projection vs number is what matters.',
   'Stat category breakdown is on every card so you can verify the logic yourself.',
   'Only pre-game props starting within the next 36 hours are ever shown.',
   'A red flame tab means those numbers come from verified real game logs.',
   'Every gold pick includes a risk factor so you know what could go wrong.',
-  'High usage players hit volume-based lines more consistently over a full season.',
-  'Rare but powerful. These are the plays worth sizing up when they appear.',
+  'The status check runs live web searches. That is why gold takes a moment to build.',
   'Trip Predicts is powered by Claude, one of the most capable AI models available.',
   'Gold picks are never forced. If none qualify today, the board stays empty.',
 ]
@@ -173,7 +173,7 @@ export default function Gold() {
           ★ GOLD PICKS
         </div>
         <div style={{ fontSize: '14px', color: 'var(--text2)', maxWidth: '320px', lineHeight: 1.6, marginBottom: '16px' }}>
-          Unlock every gold pick across all sports. 80%+ confidence plays, the full board, updated live.
+          Every gold pick, scored, trap-filtered, and verified against tonight's lineups. Plus the strongest 2-man pairings, updated live.
         </div>
         <div style={{ fontFamily: 'var(--font-d)', fontSize: '40px', letterSpacing: '1px', color: '#f5c842', marginBottom: '4px', lineHeight: 1 }}>
           $25<span style={{ fontSize: '18px', color: 'var(--text2)' }}>/month</span>
@@ -211,6 +211,7 @@ function GoldContent() {
   const [availableLeagues, setAvailableLeagues] = useState([])
   const [selectedLeague, setSelectedLeague] = useState('ALL')
   const [picksCache, setPicksCache] = useState({})
+  const [pairsCache, setPairsCache] = useState({})
   const [loadingLeague, setLoadingLeague] = useState(null)
   const [linesLoading, setLinesLoading] = useState(true)
   const [error, setError] = useState(null)
@@ -227,6 +228,21 @@ function GoldContent() {
       if (prev.some(p => p.id === pick.id)) return prev.filter(p => p.id !== pick.id)
       if (prev.length >= MAX_LEGS) return prev
       return [...prev, pick]
+    })
+  }
+
+  // Add both legs of a suggested pairing to the parlay in one tap. Legs in the
+  // pair are slim objects, so pull the full pick from the current board by id.
+  function addPairToParlay(pair, boardPicks) {
+    const fullLegs = pair.legs
+      .map(l => boardPicks.find(p => p.id === l.id))
+      .filter(Boolean)
+    setParlayPicks(prev => {
+      let next = [...prev]
+      for (const leg of fullLegs) {
+        if (!next.some(p => p.id === leg.id) && next.length < MAX_LEGS) next.push(leg)
+      }
+      return next
     })
   }
 
@@ -248,6 +264,7 @@ function GoldContent() {
   async function initLines(startLeague = 'ALL') {
     setLinesLoading(true)
     setPicksCache({})
+    setPairsCache({})
     setFacts(shuffle(FACTS))
     setStepLabels(STEP_LABELS[Math.floor(Math.random() * STEP_LABELS.length)])
     setProgress(0); setStepIdx(0); setFactIdx(0); setFactVisible(true); setError(null)
@@ -281,6 +298,16 @@ function GoldContent() {
     setLoadingLeague(league)
     setProgress(40); setStepIdx(2); setError(null)
 
+    // The gold pipeline now includes a live status-verification stage, so a
+    // cold load can take 30-60s. Creep the bar so the wait reads as work
+    // being done, not a hang. Cached loads snap straight to 100.
+    let prog = 40
+    const creep = setInterval(() => {
+      prog = Math.min(prog + 1, 85)
+      setProgress(prog)
+      if (prog >= 68) setStepIdx(3)
+    }, 700)
+
     try {
       const res = await fetch(`${SERVER}/gold`, {
         method: 'POST',
@@ -292,11 +319,13 @@ function GoldContent() {
         })
       })
 
+      clearInterval(creep)
       setProgress(88); setStepIdx(3)
       const data = await res.json()
 
       if (!res.ok || !data.picks) {
         setPicksCache(prev => ({ ...prev, [league]: [] }))
+        setPairsCache(prev => ({ ...prev, [league]: [] }))
         setLoadingLeague(null)
         return
       }
@@ -308,9 +337,12 @@ function GoldContent() {
       setProgress(100)
       await new Promise(r => setTimeout(r, 300))
       setPicksCache(prev => ({ ...prev, [league]: data.picks }))
+      setPairsCache(prev => ({ ...prev, [league]: data.pairs || [] }))
     } catch (e) {
+      clearInterval(creep)
       console.error('Gold fetch error:', e.message)
       setPicksCache(prev => ({ ...prev, [league]: [] }))
+      setPairsCache(prev => ({ ...prev, [league]: [] }))
     }
     setLoadingLeague(null)
   }
@@ -329,6 +361,7 @@ function GoldContent() {
 
   const isLoading = linesLoading || loadingLeague === selectedLeague
   const currentPicks = picksCache[selectedLeague] || []
+  const currentPairs = pairsCache[selectedLeague] || []
 
   return (
     <div style={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
@@ -336,7 +369,7 @@ function GoldContent() {
       <div style={{ padding: '18px 20px 0', display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', flexShrink: 0 }}>
         <div>
           <div style={{ fontFamily: 'var(--font-d)', fontSize: '28px', letterSpacing: '2px', lineHeight: 1, background: 'linear-gradient(90deg,#d4a017,#f5c842,#fff0a0)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>★ GOLD PICKS</div>
-          <div style={{ fontSize: '11px', color: 'var(--text2)', marginTop: '3px' }}>80%+ confidence · Strongest verified plays right now</div>
+          <div style={{ fontSize: '11px', color: 'var(--text2)', marginTop: '3px' }}>Scored · Trap-filtered · Verified for tonight</div>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
           {!isLoading && <button onClick={handleRefresh} style={{ background: 'none', border: '1px solid var(--border2)', color: 'var(--text2)', fontFamily: 'var(--font)', fontSize: '11px', padding: '5px 12px', borderRadius: '20px', cursor: 'pointer', letterSpacing: '1px' }}>Refresh</button>}
@@ -427,10 +460,74 @@ function GoldContent() {
 
       {!isLoading && !error && currentPicks.length > 0 && (
         <div style={{ flex: 1, overflowY: 'auto', padding: `14px 20px ${parlayPicks.length > 0 ? '76px' : '24px'}` }}>
+
+          {currentPairs.length > 0 && (
+            <div style={{ marginBottom: '22px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '12px' }}>
+                <span style={{ fontFamily: 'var(--font-d)', fontSize: '16px', letterSpacing: '2px', color: '#f5c842' }}>⛓ BEST PAIRINGS</span>
+                <div style={{ flex: 1, height: '1px', background: 'rgba(245,200,66,0.2)' }} />
+                <span style={{ fontSize: '11px', color: 'var(--text3)' }}>verified legs only · 3x pays above 33%</span>
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: '14px' }}>
+                {currentPairs.map((pair, pi) => {
+                  const bothIn = pair.legs.every(l => parlayPicks.some(p => p.id === l.id))
+                  return (
+                    <div key={pi} style={{
+                      background: pi === 0
+                        ? 'linear-gradient(135deg, rgba(245,200,66,0.10), rgba(212,160,23,0.04), var(--bg3))'
+                        : 'var(--bg3)',
+                      border: pi === 0 ? '1px solid rgba(245,200,66,0.45)' : '1px solid var(--border)',
+                      borderRadius: '14px', padding: '14px',
+                      boxShadow: pi === 0 ? '0 0 22px rgba(245,200,66,0.12)' : 'none'
+                    }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
+                        <span style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '1.5px', color: '#00e676', background: 'rgba(0,230,118,0.08)', border: '1px solid rgba(0,230,118,0.25)', padding: '3px 8px', borderRadius: '20px' }}>
+                          ✓ VERIFIED{pi === 0 ? ' · TOP PAIR' : ''}
+                        </span>
+                        <span style={{ fontFamily: 'var(--font-d)', fontSize: '22px', letterSpacing: '1px', color: '#f5c842', lineHeight: 1 }}>
+                          {pair.combined}%<span style={{ fontSize: '10px', color: 'var(--text3)', letterSpacing: '0.5px', marginLeft: '4px' }}>COMBINED</span>
+                        </span>
+                      </div>
+
+                      {pair.legs.map((leg, li) => (
+                        <div key={li} style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '8px 0', borderTop: li > 0 ? '1px solid var(--border)' : 'none' }}>
+                          <span style={{ color: leg.dir === 'HIGHER' ? '#00e676' : '#ef4444', fontSize: '14px', fontWeight: 800, width: '14px', textAlign: 'center' }}>
+                            {leg.dir === 'HIGHER' ? '▲' : '▼'}
+                          </span>
+                          <div style={{ flex: 1, minWidth: 0 }}>
+                            <div style={{ fontSize: '13px', fontWeight: 700, color: 'var(--text)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{leg.name}</div>
+                            <div style={{ fontSize: '11px', color: 'var(--text3)' }}>{leg.league}{leg.team ? ` · ${leg.team}` : ''} · {leg.stat} {leg.dir === 'HIGHER' ? 'over' : 'under'} {leg.val}</div>
+                          </div>
+                          <span style={{ fontFamily: 'var(--font-c)', fontSize: '13px', fontWeight: 700, color: 'var(--gold)' }}>{leg.conf}</span>
+                        </div>
+                      ))}
+
+                      <button
+                        onClick={() => addPairToParlay(pair, currentPicks)}
+                        disabled={bothIn}
+                        style={{
+                          width: '100%', marginTop: '10px',
+                          background: bothIn ? 'rgba(0,230,118,0.08)' : 'none',
+                          border: bothIn ? '1px solid rgba(0,230,118,0.3)' : '1px solid rgba(245,200,66,0.35)',
+                          color: bothIn ? '#00e676' : '#f5c842',
+                          fontFamily: 'var(--font-c)', fontSize: '12px', fontWeight: 700, letterSpacing: '1px',
+                          padding: '8px 0', borderRadius: '10px',
+                          cursor: bothIn ? 'default' : 'pointer', WebkitTapHighlightColor: 'transparent'
+                        }}
+                      >
+                        {bothIn ? '✓ IN PARLAY' : 'ADD BOTH TO PARLAY'}
+                      </button>
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
+          )}
+
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '16px' }}>
             <span style={{ fontFamily: 'var(--font-d)', fontSize: '16px', letterSpacing: '2px', color: '#f5c842' }}>★ GOLD — {selectedLeague}</span>
             <div style={{ flex: 1, height: '1px', background: 'rgba(245,200,66,0.2)' }} />
-            <span style={{ fontSize: '11px', color: 'var(--text3)' }}>{currentPicks.length} pick{currentPicks.length !== 1 ? 's' : ''} · 80%+</span>
+            <span style={{ fontSize: '11px', color: 'var(--text3)' }}>{currentPicks.length} pick{currentPicks.length !== 1 ? 's' : ''} · verified board</span>
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(170px, 1fr))', gap: '14px' }}>
             {currentPicks.map((p, i) => <PickCard key={p.id} pick={p} delay={i * 60} selected={parlayPicks.some(x => x.id === p.id)} onToggleParlay={toggleParlay} />)}
@@ -442,7 +539,7 @@ function GoldContent() {
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '40px', textAlign: 'center' }}>
           <div style={{ fontSize: '40px', marginBottom: '16px' }}>★</div>
           <div style={{ fontFamily: 'var(--font-d)', fontSize: '22px', letterSpacing: '2px', color: 'var(--text2)', marginBottom: '8px' }}>NO GOLD FOR {selectedLeague}</div>
-          <div style={{ fontSize: '13px', color: 'var(--text3)', marginBottom: '24px', lineHeight: 1.6, maxWidth: '280px' }}>No verified picks hit {selectedLeague === 'WNBA' ? '70%+' : selectedLeague === 'MLB' ? '80%+' : '90%+'} confidence for {selectedLeague} right now. Try another league or check back later.</div>
+          <div style={{ fontSize: '13px', color: 'var(--text3)', marginBottom: '24px', lineHeight: 1.6, maxWidth: '280px' }}>No picks cleared the {selectedLeague === 'WNBA' ? '70+' : selectedLeague === 'MLB' ? '75+' : '90+'} score, the trap filter, and tonight's status check for {selectedLeague}. Try another league or check back later.</div>
           {selectedLeague !== 'ALL' && <button onClick={() => handleTabSelect('ALL')} style={{ background: 'none', border: '1px solid var(--border2)', color: 'var(--text2)', fontFamily: 'var(--font)', fontSize: '13px', padding: '8px 20px', borderRadius: '10px', cursor: 'pointer', marginBottom: '10px' }}>Check All Sports</button>}
           <button onClick={handleRefresh} style={{ background: 'none', border: '1px solid rgba(245,200,66,0.3)', color: '#f5c842', fontFamily: 'var(--font)', fontSize: '13px', padding: '8px 20px', borderRadius: '10px', cursor: 'pointer' }}>Refresh Picks</button>
         </div>
