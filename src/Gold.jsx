@@ -9,7 +9,7 @@ const SERVER = 'https://trippredicts-production-cfad.up.railway.app'
 const LEAGUE_ORDER = ['ALL', 'MLB', 'WNBA', 'NBA', 'NHL', 'NFL', 'CS2', 'LOL', 'VALORANT', 'COD', 'SOCCER', 'TENNIS', 'GOLF', 'MMA']
 
 // Sports backed by real BALLDONTLIE game data. These tabs get the fiery treatment.
-const REAL_DATA_LEAGUES = ['MLB', 'WNBA']
+const REAL_DATA_LEAGUES = ['MLB', 'WNBA', 'LOL', 'CS2']
 
 const LEAGUE_COLORS = {
   'ALL':      '#f5c842',
@@ -39,21 +39,21 @@ const STEP_LABELS = [
 const FACTS = [
   'Gold picks are the rarest plays on the board. Most sessions only have 1 or 2.',
   'Gold means clearing the score floor, the trap filter, AND tonight\'s status check.',
-  'Over 250 live props are scanned every load to find the few that truly qualify.',
-  'Streak traps are filtered out. A 14 of 15 run on a raised line is bait, not value.',
+  'Every sport with live lines gets scanned. All picks go through the analyst.',
+  'Streak traps are filtered out. 12+ of 15 green games is bait, not value.',
   'Ratings are shrunk for sample size, so a short hot streak can never fake a lock.',
   'Every top pick is verified against tonight\'s slate: opponent, lineup, injury status.',
   'A player ruled out or missing from the lineup is removed from the board entirely.',
   'Best Pairings shows the strongest 2-man combos, built from verified legs only.',
   'Two legs from the same team never get paired. One bad team night kills both.',
   'A 2-leg Power Play pays 3x, so anything above 33% combined is a real edge.',
-  'MLB and WNBA picks are backed by real game-by-game data from BALLDONTLIE.',
+  'MLB, WNBA, LoL, and CS2 picks are backed by real game data from BALLDONTLIE.',
   'Lines are fetched fresh every time so you never see stale or outdated props.',
   'The model scores the LINE, not the streak. Projection vs number is what matters.',
   'Stat category breakdown is on every card so you can verify the logic yourself.',
   'Only pre-game props starting within the next 36 hours are ever shown.',
   'A red flame tab means those numbers come from verified real game logs.',
-  'Every gold pick includes a risk factor so you know what could go wrong.',
+  'Tap View Info on any card to read the analyst\'s finding on that player.',
   'The status check runs live web searches. That is why gold takes a moment to build.',
   'Trip Predicts is powered by Claude, one of the most capable AI models available.',
   'Gold picks are never forced. If none qualify today, the board stays empty.',
@@ -466,11 +466,12 @@ function GoldContent() {
               <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '12px' }}>
                 <span style={{ fontFamily: 'var(--font-d)', fontSize: '16px', letterSpacing: '2px', color: '#f5c842' }}>⛓ BEST PAIRINGS</span>
                 <div style={{ flex: 1, height: '1px', background: 'rgba(245,200,66,0.2)' }} />
-                <span style={{ fontSize: '11px', color: 'var(--text3)' }}>verified legs only · 3x pays above 33%</span>
+                <span style={{ fontSize: '11px', color: 'var(--text3)' }}>caution legs never pair · 3x pays above 33%</span>
               </div>
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: '14px' }}>
                 {currentPairs.map((pair, pi) => {
                   const bothIn = pair.legs.every(l => parlayPicks.some(p => p.id === l.id))
+                  const fullyVerified = !!pair.verified
                   return (
                     <div key={pi} style={{
                       background: pi === 0
@@ -481,8 +482,14 @@ function GoldContent() {
                       boxShadow: pi === 0 ? '0 0 22px rgba(245,200,66,0.12)' : 'none'
                     }}>
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
-                        <span style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '1.5px', color: '#00e676', background: 'rgba(0,230,118,0.08)', border: '1px solid rgba(0,230,118,0.25)', padding: '3px 8px', borderRadius: '20px' }}>
-                          ✓ VERIFIED{pi === 0 ? ' · TOP PAIR' : ''}
+                        <span style={{
+                          fontSize: '10px', fontWeight: 700, letterSpacing: '1.5px',
+                          color: fullyVerified ? '#00e676' : '#f5c842',
+                          background: fullyVerified ? 'rgba(0,230,118,0.08)' : 'rgba(245,200,66,0.08)',
+                          border: fullyVerified ? '1px solid rgba(0,230,118,0.25)' : '1px solid rgba(245,200,66,0.25)',
+                          padding: '3px 8px', borderRadius: '20px'
+                        }}>
+                          {fullyVerified ? '✓ VERIFIED' : '○ NO RED FLAGS'}{pi === 0 ? ' · TOP PAIR' : ''}
                         </span>
                         <span style={{ fontFamily: 'var(--font-d)', fontSize: '22px', letterSpacing: '1px', color: '#f5c842', lineHeight: 1 }}>
                           {pair.combined}%<span style={{ fontSize: '10px', color: 'var(--text3)', letterSpacing: '0.5px', marginLeft: '4px' }}>COMBINED</span>
@@ -539,7 +546,7 @@ function GoldContent() {
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '40px', textAlign: 'center' }}>
           <div style={{ fontSize: '40px', marginBottom: '16px' }}>★</div>
           <div style={{ fontFamily: 'var(--font-d)', fontSize: '22px', letterSpacing: '2px', color: 'var(--text2)', marginBottom: '8px' }}>NO GOLD FOR {selectedLeague}</div>
-          <div style={{ fontSize: '13px', color: 'var(--text3)', marginBottom: '24px', lineHeight: 1.6, maxWidth: '280px' }}>No picks cleared the {selectedLeague === 'WNBA' ? '70+' : selectedLeague === 'MLB' ? '75+' : '90+'} score, the trap filter, and tonight's status check for {selectedLeague}. Try another league or check back later.</div>
+          <div style={{ fontSize: '13px', color: 'var(--text3)', marginBottom: '24px', lineHeight: 1.6, maxWidth: '280px' }}>No picks cleared the {selectedLeague === 'WNBA' ? '70+' : ['MLB', 'LOL', 'CS2'].includes(selectedLeague) ? '75+' : '80+'} score, the trap filter, and tonight's status check for {selectedLeague}. Try another league or check back later.</div>
           {selectedLeague !== 'ALL' && <button onClick={() => handleTabSelect('ALL')} style={{ background: 'none', border: '1px solid var(--border2)', color: 'var(--text2)', fontFamily: 'var(--font)', fontSize: '13px', padding: '8px 20px', borderRadius: '10px', cursor: 'pointer', marginBottom: '10px' }}>Check All Sports</button>}
           <button onClick={handleRefresh} style={{ background: 'none', border: '1px solid rgba(245,200,66,0.3)', color: '#f5c842', fontFamily: 'var(--font)', fontSize: '13px', padding: '8px 20px', borderRadius: '10px', cursor: 'pointer' }}>Refresh Picks</button>
         </div>
