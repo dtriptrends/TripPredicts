@@ -805,74 +805,89 @@ async function logGoldPicks(picks) {
 }
 
 // ===== GOLD AUTO-ANALYSIS =====
-// After the scoring engine selects gold candidates, a single web-search pass
-// checks tonight's reality for each one: opponent, injury/lineup status,
-// anything the game logs can't see. The model NEVER re-rates picks itself.
-// It returns a status per player and the SERVER applies the adjustment:
-//   CONFIRMED — found active/starting tonight, no red flags. Rating stands,
-//               pick is pairing-eligible.
-//   CAUTION   — questionable tag, bad matchup news, or no status found.
-//               Rating -10, stays on the board, excluded from pairings.
+// After the scoring engine selects gold candidates, a web-search pass checks
+// tonight's reality for EVERY pick on the board, all leagues — MLB, WNBA,
+// NBA, NHL, esports, all of it: opponent, injury/lineup status, anything the
+// game logs can't see. The board is split into chunks of 10 that run in
+// parallel so full coverage doesn't slow the load down. The model NEVER
+// re-rates picks itself. It returns a status per player and the SERVER
+// applies the adjustment:
+//   CONFIRMED — positively found active/starting tonight. Rating stands,
+//               ✓ VERIFIED on the card, pairing-eligible.
+//   NO_NEWS   — nothing negative found (lineup may not be posted yet).
+//               Rating stands, pairing-eligible.
+//   CAUTION   — an actual negative finding. Rating -10, ⚠ CAUTION on the
+//               card, never pairs, and drops off gold if it falls under floor.
 //   OUT       — ruled out or team not playing. Pick removed entirely.
-const ANALYZE_TOP_N = 12
+const ANALYZE_CHUNK = 10
 
-async function analyzeGoldPicks(picks, currentTime) {
-  const targets = picks.slice(0, ANALYZE_TOP_N)
-  if (!targets.length) return picks
-  const list = targets.map(p =>
+async function analyzeChunk(chunk, currentTime) {
+  const list = chunk.map(p =>
     `- ${p.name} (${p.league}${p.team ? ' · ' + p.team : ''}): ${p.stat} ${p.dir === 'HIGHER' ? 'over' : 'under'} ${p.val}`
   ).join('\n')
 
   const userMsg = `Current time: ${currentTime || new Date().toISOString()} ET
 
-These are tonight's model-selected picks. For EACH player, search for who they play today or tonight and their current injury or lineup status. Base status ONLY on what you actually find in search results, never on memory.
+These are tonight's model-selected picks across multiple sports and esports. For EACH player, search for who they play today or tonight and their current injury or lineup status. Base status ONLY on what you actually find in search results, never on memory.
 
 ${list}
 
 Status rules:
-- "CONFIRMED": you found evidence they are active/starting tonight with no injury designation
-- "CAUTION": questionable or day-to-day tag, unfavorable news (elite opposing pitcher, minutes concern, weather delay risk), OR you could not find current status
+- "CONFIRMED": you found evidence they are active, starting, or in tonight's lineup/roster with no injury designation
+- "NO_NEWS": you found NO negative information, but could not positively confirm the lineup either. This is NORMAL for games later today or tomorrow whose lineups are not posted yet. No injury designation found = NO_NEWS, not CAUTION.
+- "CAUTION": you found an ACTUAL negative: questionable or day-to-day tag, benched, minutes concern, elite opposing pitcher, roster substitution risk, weather delay risk
 - "OUT": ruled out, not in the lineup, or their team does not play in the next 36 hours
 
 Respond with ONLY this JSON array as your final message, nothing before or after it, no markdown fences:
-[{"name":"exact player name from the list","status":"CONFIRMED","note":"1 sentence: opponent tonight and what you found"}]`
+[{"name":"exact player name from the list","status":"CONFIRMED","note":"1 sentence: opponent and what you found"}]`
 
   let messages = [{ role: 'user', content: userMsg }]
   let finalText = ''
-  try {
-    for (let i = 0; i < 6; i++) {
-      const r = await fetch('https://api.anthropic.com/v1/messages', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-api-key': API_KEY, 'anthropic-version': '2023-06-01' },
-        body: JSON.stringify({
-          model: 'claude-sonnet-4-6',
-          max_tokens: 3000,
-          tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 14 }],
-          system: `You verify sports betting picks against tonight's reality. Use web search for every player on the list. Never state injury or lineup information you did not actually find via search. Output ONLY the requested JSON array as your final answer, nothing else.`,
-          messages
-        })
+  for (let i = 0; i < 6; i++) {
+    const r = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-api-key': API_KEY, 'anthropic-version': '2023-06-01' },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-6',
+        max_tokens: 3000,
+        tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 12 }],
+        system: `You verify sports betting picks against tonight's reality. Use web search for every player on the list. Never state injury or lineup information you did not actually find via search. Output ONLY the requested JSON array as your final answer, nothing else.`,
+        messages
       })
-      const data = await r.json()
-      if (!data.content) throw new Error(data.error?.message || 'No content')
-      finalText += data.content.filter(b => b.type === 'text').map(b => b.text).join('\n')
-      if (data.stop_reason === 'pause_turn') {
-        messages = [...messages, { role: 'assistant', content: data.content }]
-        continue
-      }
-      break
+    })
+    const data = await r.json()
+    if (!data.content) throw new Error(data.error?.message || 'No content')
+    finalText += data.content.filter(b => b.type === 'text').map(b => b.text).join('\n')
+    if (data.stop_reason === 'pause_turn') {
+      messages = [...messages, { role: 'assistant', content: data.content }]
+      continue
     }
-  } catch (e) {
-    console.error('Gold analysis skipped:', e.message)
-    return picks // an analysis failure must never blank the gold board
+    break
   }
 
   const start = finalText.indexOf('[')
   const end = finalText.lastIndexOf(']')
-  if (start === -1 || end === -1) return picks
-  let results
-  try { results = JSON.parse(finalText.slice(start, end + 1)) } catch (e) { return picks }
+  if (start === -1 || end === -1) return []
+  try { return JSON.parse(finalText.slice(start, end + 1)) } catch (e) { return [] }
+}
+
+async function analyzeGoldPicks(picks, currentTime) {
+  if (!picks.length) return picks
+
+  // Every pick on the board gets the analyst, all leagues. Chunks run in
+  // parallel; a failed chunk leaves its picks UNANALYZED instead of blanking
+  // the board.
+  const chunks = []
+  for (let i = 0; i < picks.length; i += ANALYZE_CHUNK) chunks.push(picks.slice(i, i + ANALYZE_CHUNK))
   const byName = {}
-  results.forEach(r => { if (r && r.name) byName[r.name.toLowerCase()] = r })
+  await Promise.all(chunks.map(async chunk => {
+    try {
+      const results = await analyzeChunk(chunk, currentTime)
+      results.forEach(r => { if (r && r.name) byName[r.name.toLowerCase()] = r })
+    } catch (e) {
+      console.error('Analysis chunk skipped:', e.message)
+    }
+  }))
 
   const out = []
   for (const p of picks) {
@@ -885,12 +900,17 @@ Respond with ONLY this JSON array as your final message, nothing before or after
     p.analysisNote = note || null
     if (status === 'CONFIRMED') {
       p.analysisStatus = 'CONFIRMED'
-      if (note) p.bull = `${p.bull} Verified tonight: ${note}`
-    } else {
+      p.meta = `${p.meta} · ✓ VERIFIED`
+    } else if (status === 'CAUTION') {
       p.analysisStatus = 'CAUTION'
       p.conf = Math.max(1, p.conf - 10)
       p.cats = [{ n: p.stat, p: p.conf }]
+      p.meta = `${p.meta} · ⚠ CAUTION`
       if (note) p.bear = `CAUTION: ${note} ${p.bear}`
+    } else {
+      // NO_NEWS (or anything unrecognized): nothing negative found. A lineup
+      // not being posted yet is not bad news, so the rating stands untouched.
+      p.analysisStatus = 'NO_NEWS'
     }
     out.push(p)
   }
@@ -898,12 +918,13 @@ Respond with ONLY this JSON array as your final message, nothing before or after
 }
 
 // ===== PAIRING ENGINE =====
-// The strongest 2-man combos, built ONLY from analysis-CONFIRMED picks.
-// Rules: never two legs from the same team (one bad team night kills both),
-// prefer legs from different leagues/games for independence, rank by the
-// combined rate treating legs as independent. A 2-leg Power Play pays 3x,
-// so the breakeven is ~33% combined. Anything shown well above that is a
-// genuine edge IF the ratings are honest, which is the whole point of v2.
+// The strongest 2-man combos, built from legs with a clean status check:
+// CONFIRMED (positively verified in tonight's lineup) or NO_NEWS (nothing
+// negative found — normal for games whose lineups aren't posted yet).
+// CAUTION legs never pair. Rules: never two legs from the same team (one bad
+// team night kills both), prefer CONFIRMED legs and cross-league independence,
+// rank by the combined rate treating legs as independent. A 2-leg Power Play
+// pays 3x, so the breakeven is ~33% combined.
 function teamOf(p) {
   if (p.team) return String(p.team).toUpperCase()
   const parts = String(p.meta || '').split('·')
@@ -911,7 +932,8 @@ function teamOf(p) {
 }
 
 function buildPairs(picks, maxPairs = 3) {
-  const elig = picks.filter(p => p.analysisStatus === 'CONFIRMED')
+  const OK = ['CONFIRMED', 'NO_NEWS']
+  const elig = picks.filter(p => OK.includes(p.analysisStatus))
   const pairs = []
   for (let i = 0; i < elig.length; i++) {
     for (let j = i + 1; j < elig.length; j++) {
@@ -920,15 +942,22 @@ function buildPairs(picks, maxPairs = 3) {
       if (ta && tb && ta === tb) continue // same team = correlated failure
       const combined = Math.round((a.conf / 100) * (b.conf / 100) * 100)
       const sameSlot = a.league === b.league && a.time && a.time === b.time
-      const rank = combined + (a.league !== b.league ? 2 : 0) - (sameSlot ? 3 : 0)
+      const confirmedCount = [a, b].filter(p => p.analysisStatus === 'CONFIRMED').length
+      const rank = combined
+        + confirmedCount * 3                      // verified legs beat unposted lineups
+        + (a.league !== b.league ? 2 : 0)          // cross-league independence
+        - (sameSlot ? 3 : 0)                       // may share a game window
       pairs.push({
         rank,
         combined,
+        verified: confirmedCount === 2,
         legs: [a, b].map(p => ({
           id: p.id, name: p.name, league: p.league, team: teamOf(p),
-          stat: p.stat, val: p.val, dir: p.dir, conf: p.conf
+          stat: p.stat, val: p.val, dir: p.dir, conf: p.conf,
+          status: p.analysisStatus
         })),
         why: `${a.name} (${a.conf}) + ${b.name} (${b.conf})` +
+          (confirmedCount === 2 ? ' · both verified in lineups' : confirmedCount === 1 ? ' · one leg verified' : ' · no red flags found') +
           (a.league !== b.league ? ' · independent leagues' : '') +
           (sameSlot ? ' · may share a game window' : '')
       })
@@ -1130,10 +1159,13 @@ app.post('/gold', async (req, res) => {
     console.log('Got', picks.length, 'gold picks (', picks.filter(p => REAL.includes(p.league)).length, 'real ) — analyzing tonight\'s status')
 
     // Stage 2: auto-verify tonight's reality (opponent, injuries, lineups) for
-    // the top picks, then re-rate. OUT picks are removed, CAUTION picks are
-    // docked 10 and blocked from pairing, CONFIRMED picks keep their rating
-    // and earn a verified note on the card.
+    // the top picks, then re-rate. OUT picks are removed, real negative
+    // findings dock 10, clean checks (CONFIRMED / NO_NEWS) keep their rating.
     picks = await analyzeGoldPicks(picks, currentTime)
+
+    // The floor is re-enforced AFTER re-rating: a pick docked for bad news
+    // that falls under its league floor does not belong on the gold board.
+    picks = picks.filter(p => p.conf >= goldFloorFor((p.league || '').toUpperCase()))
     picks.sort((a, b) => b.conf - a.conf)
 
     // Stage 3: the strongest 2-man pairings from confirmed legs only.
@@ -1141,6 +1173,7 @@ app.post('/gold', async (req, res) => {
 
     console.log('Final board:', picks.length, 'picks,',
       picks.filter(p => p.analysisStatus === 'CONFIRMED').length, 'confirmed,',
+      picks.filter(p => p.analysisStatus === 'NO_NEWS').length, 'no-news,',
       picks.filter(p => p.analysisStatus === 'CAUTION').length, 'caution,',
       pairs.length, 'pairings')
 
