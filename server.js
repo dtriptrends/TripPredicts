@@ -886,19 +886,14 @@ Respond with ONLY this JSON array as your final message, nothing before or after
   let messages = [{ role: 'user', content: userMsg }]
   let finalText = ''
   for (let i = 0; i < 6; i++) {
-    const r = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-api-key': API_KEY, 'anthropic-version': '2023-06-01' },
-      body: JSON.stringify({
-        model: 'claude-sonnet-4-6',
-        max_tokens: 3000,
-        tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 12 }],
-        system: `You verify sports betting picks against tonight's reality. Use web search for every player on the list. Never state injury or lineup information you did not actually find via search. Output ONLY the requested JSON array as your final answer, nothing else.`,
-        messages
-      })
+    const data = await anthropicCall({
+      model: 'claude-sonnet-4-6',
+      max_tokens: 3000,
+      tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 12 }],
+      system: `You verify sports betting picks against tonight's reality. Use web search for every player on the list. Never state injury or lineup information you did not actually find via search. Output ONLY the requested JSON array as your final answer, nothing else.`,
+      messages
     })
-    const data = await r.json()
-    if (!data.content) throw new Error(data.error?.message || 'No content')
+    if (!data || !data.content) throw new Error((data && data.error && data.error.message) || 'No content')
     finalText += data.content.filter(b => b.type === 'text').map(b => b.text).join('\n')
     if (data.stop_reason === 'pause_turn') {
       messages = [...messages, { role: 'assistant', content: data.content }]
@@ -922,14 +917,14 @@ async function analyzeGoldPicks(picks, currentTime) {
   const chunks = []
   for (let i = 0; i < picks.length; i += ANALYZE_CHUNK) chunks.push(picks.slice(i, i + ANALYZE_CHUNK))
   const byName = {}
-  await Promise.all(chunks.map(async chunk => {
+  await mapLimit(chunks, 2, async chunk => {
     try {
       const results = await analyzeChunk(chunk, currentTime)
       results.forEach(r => { if (r && r.name) byName[r.name.toLowerCase()] = r })
     } catch (e) {
       console.error('Analysis chunk skipped:', e.message)
     }
-  }))
+  })
 
   const out = []
   for (const p of picks) {
@@ -1035,6 +1030,28 @@ function pickAiLeagues(rawLines, reqLeague, REAL) {
 let goldCache = {}
 const GOLD_CACHE_TTL = 30 * 60 * 1000
 
+// Shared Anthropic call with retry. The parallel per-league fan-out can trip
+// rate limits (429) or transient overloads; silent empty returns made those
+// invisible and blanked boards. Errors are logged and retried with backoff.
+async function anthropicCall(body, tries = 3) {
+  let data = null
+  for (let i = 0; i < tries; i++) {
+    const r = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-api-key': API_KEY, 'anthropic-version': '2023-06-01' },
+      body: JSON.stringify(body)
+    })
+    data = await r.json()
+    if (data && data.content) return data
+    const type = (data && data.error && data.error.type) || `http_${r.status}`
+    console.error('Anthropic error:', type, (data && data.error && data.error.message) || '')
+    const retryable = r.status === 429 || r.status >= 500 || String(type).includes('overloaded') || String(type).includes('rate')
+    if (i < tries - 1 && retryable) { await sleep(2500 * (i + 1)); continue }
+    break
+  }
+  return data
+}
+
 // AI pick generation for sports WITHOUT real data. MLB/WNBA are handled by the
 // scanner and excluded here.
 async function aiPicks(currentTime, lines, league, rawLines, mode, pickCount) {
@@ -1092,19 +1109,13 @@ Rules:
 - NEVER pick the same player more than once
 - Give exactly ${pickCount} picks`
 
-  const response = await fetch('https://api.anthropic.com/v1/messages', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'x-api-key': API_KEY, 'anthropic-version': '2023-06-01' },
-    body: JSON.stringify({
-      model: 'claude-sonnet-4-6',
-      max_tokens: 4000,
-      system: `You are a PrizePicks prop analyst. Output ONLY a valid JSON array. No text before or after. Start with [ end with ].`,
-      messages: [{ role: 'user', content: gold ? goldBody : tonightBody }]
-    })
+  const data = await anthropicCall({
+    model: 'claude-sonnet-4-6',
+    max_tokens: 4000,
+    system: `You are a PrizePicks prop analyst. Output ONLY a valid JSON array. No text before or after. Start with [ end with ].`,
+    messages: [{ role: 'user', content: gold ? goldBody : tonightBody }]
   })
-
-  const data = await response.json()
-  if (!data.content) return []
+  if (!data || !data.content) { console.error('aiPicks got no content for', league || 'ALL'); return [] }
   const textBlock = data.content.find(b => b.type === 'text')
   if (!textBlock) return []
   const start = textBlock.text.indexOf('[')
@@ -1155,11 +1166,13 @@ app.post('/picks', async (req, res) => {
     // golf, MMA, whatever the slate has), run in parallel. Leagues need at
     // least 5 lines to qualify, capped at the 8 deepest slates.
     const aiLeagues = pickAiLeagues(rawLines, reqLeague, REAL)
-    const aiResults = await Promise.all(aiLeagues.map(lg => {
+    const aiResults = []
+    await mapLimit(aiLeagues, 3, async lg => {
       const lgLines = rawLines.filter(l => (l.league || '').toUpperCase() === lg).slice(0, 60)
-      return aiPicks(currentTime, lgLines, lg, rawLines, 'tonight', Math.min(pickCount, 4))
-    }))
-    aiResults.forEach(arr => { picks = picks.concat(arr) })
+      const arr = await aiPicks(currentTime, lgLines, lg, rawLines, 'tonight', Math.min(pickCount, 4))
+      aiResults.push(...arr)
+    })
+    picks = picks.concat(aiResults)
 
     picks.sort((a, b) => b.conf - a.conf)
     picks = picks.slice(0, 40)
@@ -1213,12 +1226,17 @@ app.post('/gold', async (req, res) => {
     // AI gold per league for EVERY other sport with live lines, in parallel,
     // each gated by its gold floor. Every sport on the slate gets scanned.
     const aiLeagues = pickAiLeagues(rawLines, reqLeague, REAL)
-    const aiResults = await Promise.all(aiLeagues.map(async lg => {
+    const aiResults = []
+    await mapLimit(aiLeagues, 3, async lg => {
       const lgLines = rawLines.filter(l => (l.league || '').toUpperCase() === lg).slice(0, 60)
       const aiGold = await aiPicks(currentTime, lgLines, lg, rawLines, 'gold')
-      return aiGold.filter(p => p.conf >= goldFloorFor(lg))
-    }))
-    aiResults.forEach(arr => { picks = picks.concat(arr) })
+      aiResults.push(...aiGold.filter(p => p.conf >= goldFloorFor(lg)))
+    })
+    picks = picks.concat(aiResults)
+
+    // Snapshot before the gates so a thin slate can still show its best
+    // candidates instead of a blank board.
+    const candidates = [...picks]
 
     // Final gate: every pick must clear its floor AND carry no trap flag,
     // regardless of how it got here.
@@ -1238,21 +1256,37 @@ app.post('/gold', async (req, res) => {
     picks = picks.filter(p => p.conf >= goldFloorFor((p.league || '').toUpperCase()))
     picks.sort((a, b) => b.conf - a.conf)
 
+    // Never-empty valve: if nothing cleared every gate but real candidates
+    // exist (All-Star breaks and thin slates happen), surface the best
+    // non-trap ones honestly labeled NEAR GOLD instead of a blank board.
+    if (picks.length === 0 && candidates.length > 0) {
+      picks = candidates
+        .filter(p => !p.trapRisk)
+        .sort((a, b) => b.conf - a.conf)
+        .slice(0, 5)
+        .map(p => ({ ...p, nearGold: true, meta: `${p.meta} · NEAR GOLD`, analysisStatus: p.analysisStatus || 'UNANALYZED' }))
+      console.log('Never-empty valve engaged:', picks.length, 'NEAR GOLD picks from', candidates.length, 'candidates')
+    }
+
     // Stage 3: the strongest 2-man pairings from confirmed legs only.
     const pairs = buildPairs(picks)
 
-    console.log('Final board:', picks.length, 'picks,',
-      picks.filter(p => p.analysisStatus === 'CONFIRMED').length, 'confirmed,',
-      picks.filter(p => p.analysisStatus === 'NO_NEWS').length, 'no-news,',
-      picks.filter(p => p.analysisStatus === 'CAUTION').length, 'caution,',
-      pairs.length, 'pairings')
+    console.log('Gold stages — candidates:', candidates.length,
+      '| final:', picks.length,
+      '| confirmed:', picks.filter(p => p.analysisStatus === 'CONFIRMED').length,
+      '| no-news:', picks.filter(p => p.analysisStatus === 'NO_NEWS').length,
+      '| caution:', picks.filter(p => p.analysisStatus === 'CAUTION').length,
+      '| near-gold:', picks.filter(p => p.nearGold).length,
+      '| pairings:', pairs.length)
 
     // Track the record: every gold pick that reaches the board gets logged
     // with its FINAL (post-analysis) rating.
     logGoldPicks(picks)
 
     const payload = { picks, pairs }
-    goldCache[goldKey] = { data: payload, ts: Date.now() }
+    // Empty boards are never cached: a transient API failure or a dead slate
+    // should retry on the next load, not lock in a blank tab for 30 minutes.
+    if (picks.length > 0) goldCache[goldKey] = { data: payload, ts: Date.now() }
     res.json(payload)
   } catch (e) {
     console.error('Gold error:', e.message)
