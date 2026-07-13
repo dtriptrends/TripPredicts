@@ -718,15 +718,16 @@ async function mapLimit(items, limit, fn) {
 }
 
 // Gold floor per league, applied to the COMPOSITE score (not raw hit rate).
-// The composite is deliberately harder to max out: a genuinely strong pick
-// lands ~80-90, a decent one ~70-75, a trap lands in the 30s-50s. WNBA keeps
-// a slightly lower bar since its slates are smaller. This function is the
-// ONLY source of truth, used by the scanner, the AI fallback, and the final
-// gate, so the three can never disagree.
+// Calibrated to the post-trap distribution: with 80%+ streaks banned, the
+// strongest legitimate real-data picks (11 of 15 with genuine projection
+// edge) land in the low-to-mid 70s, decent ones in the high 60s, traps in
+// the 30s-60s. AI-league picks are model-claimed confidence on a different
+// scale and keep the higher bar. This function is the ONLY source of truth,
+// used by the scanner, the AI fallback, and the final gate.
 function goldFloorFor(lg) {
-  if (lg === 'WNBA') return 70
-  if (lg === 'MLB') return 75
-  if (lg === 'LOL' || lg === 'CS2') return 75
+  if (lg === 'WNBA') return 68
+  if (lg === 'MLB') return 72
+  if (lg === 'LOL' || lg === 'CS2') return 72
   return 80
 }
 
@@ -1112,6 +1113,12 @@ Rules:
   let parsed
   try { parsed = JSON.parse(textBlock.text.slice(start, end + 1)) } catch (e) { return [] }
   const grounded = await groundPicks(validateLines(dedupe(normalizePicks(parsed)), rawLines))
+  // The model emits ids 1..N per call, which collides across the parallel
+  // per-league calls and breaks parlay toggling and React keys. Rebuild every
+  // id from content so picks are globally unique across the whole board.
+  grounded.forEach(p => {
+    p.id = `ai-${p.league}-${p.name}-${p.stat}-${p.val}`.replace(/\s+/g, '_')
+  })
   return grounded
 }
 
