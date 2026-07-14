@@ -1268,6 +1268,12 @@ app.post('/gold', async (req, res) => {
       console.log('Never-empty valve engaged:', picks.length, 'NEAR GOLD picks from', candidates.length, 'candidates')
     }
 
+    // Every pick that reaches this board IS gold by definition (it cleared
+    // its league floor, the trap filter, and the status check). Ship the
+    // tier explicitly so the card labels it GOLD instead of inferring a
+    // tier from conf thresholds built for the old 0-95 AI scale.
+    picks.forEach(p => { p.tier = p.nearGold ? 'NEAR GOLD' : 'GOLD' })
+
     // Stage 3: the strongest 2-man pairings from confirmed legs only.
     const pairs = buildPairs(picks)
 
