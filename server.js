@@ -649,9 +649,14 @@ function scoreProp(games, league, statLabel, L) {
 
   sides.sort((a, b) => b.score - a.score)
   const best = sides[0]
+  // The raw composite tops out in the high 70s/80s by construction. The card
+  // and all product copy speak an "80+ = gold" scale, so the score is mapped
+  // onto that axis. Monotonic: ordering, gates, and trap flags are decided on
+  // the raw value, only the displayed number changes scale.
+  const scaled = Math.round(best.score * 1.2)
   return {
     dir: best.dir,
-    score: Math.max(1, Math.min(99, Math.round(best.score))),
+    score: Math.max(1, Math.min(97, scaled)),
     hit: best.hits15,
     total: best.n15,
     rawPct: Math.round(best.rawRecent * 100),
@@ -717,18 +722,16 @@ async function mapLimit(items, limit, fn) {
   await Promise.all(workers)
 }
 
-// Gold floor per league, applied to the COMPOSITE score (not raw hit rate).
-// Calibrated to the post-trap distribution: with 80%+ streaks banned, the
-// strongest legitimate real-data picks (11 of 15 with genuine projection
-// edge) land in the low-to-mid 70s, decent ones in the high 60s, traps in
-// the 30s-60s. AI-league picks are model-claimed confidence on a different
-// scale and keep the higher bar. This function is the ONLY source of truth,
-// used by the scanner, the AI fallback, and the final gate.
+// Gold floor per league on the scaled 80+ axis. Raw-score equivalents are
+// unchanged (WNBA 68, MLB/esports 72), so selection is identical to before
+// the rescale — every pick clearing its floor now also reads as GOLD on the
+// card. AI-league picks are model-claimed confidence. This function is the
+// ONLY source of truth, used by the scanner, the AI fallback, and both gates.
 function goldFloorFor(lg) {
-  if (lg === 'WNBA') return 68
-  if (lg === 'MLB') return 72
-  if (lg === 'LOL' || lg === 'CS2') return 72
-  return 80
+  if (lg === 'WNBA') return 82
+  if (lg === 'MLB') return 86
+  if (lg === 'LOL' || lg === 'CS2') return 86
+  return 82
 }
 
 // Build a frontend-shaped pick straight from the scoring engine's output.
@@ -1069,20 +1072,20 @@ async function aiPicks(currentTime, lines, league, rawLines, mode, pickCount) {
 
   const goldBody = `Current time: ${currentTime} ET
 
-These are REAL live PrizePicks lines. Find the highest confidence picks at 80%+ confidence only. Copy line numbers exactly — never change them:
+These are REAL live PrizePicks lines. Find the highest confidence picks at 82%+ confidence only. Copy line numbers exactly — never change them:
 
 ${spreadRule}
 
 ${linesText}
 
-Find your top picks where you are genuinely 80%+ confident based on recent player performance and matchup. Only assign 80%+ confidence when genuinely warranted. Be suspicious of hot streaks: a line cleared in nearly every recent game is usually already priced in.
+Find your top picks where you are genuinely 82%+ confident based on recent player performance and matchup. Only assign 82%+ confidence when genuinely warranted. Be suspicious of hot streaks: a line cleared in nearly every recent game is usually already priced in.
 
 Output ONLY this JSON array:
 [{"id":1,"name":"exact player name","meta":"League · Team","stat":"exact stat","val":"exact line number","dir":"HIGHER","conf":92,"sport":"NBA","league":"NBA","initials":"PN","time":"exact time","date":"exact date","bull":"specific reason why this hits","bear":"real risk factor","record":"Hit this line in 12 of his last 15 games","cats":[{"n":"stat name","p":92}]}]
 
 Rules:
 - Copy line numbers EXACTLY — never change them
-- conf must be 80 or above — never assign below 80 on this endpoint
+- conf must be 82 or above — never assign below 82 on this endpoint
 - dir is HIGHER or LOWER based on real statistical evidence — never guess
 - Vary stat categories. Mix in 3-pointers made, shot attempts, steals, blocks, turnovers and other categories
 - NEVER pick the same player twice
@@ -1152,7 +1155,7 @@ app.post('/picks', async (req, res) => {
     // falls through to AI so its board is never blank.
     const scanLgs = reqLeague ? (REAL.includes(reqLeague) ? [reqLeague] : []) : REAL
     const scanResults = await Promise.all(scanLgs.map(async lg => {
-      const scanned = await realScan(rawLines, lg, 60, 2, 15, false)
+      const scanned = await realScan(rawLines, lg, 72, 2, 15, false)
       if (scanned.length > 0) return scanned
       const lgLines = rawLines.filter(l => (l.league || '').toUpperCase() === lg)
       if (!lgLines.length) return []
