@@ -212,6 +212,7 @@ function GoldContent() {
   const [selectedLeague, setSelectedLeague] = useState('ALL')
   const [picksCache, setPicksCache] = useState({})
   const [pairsCache, setPairsCache] = useState({})
+  const [warningsCache, setWarningsCache] = useState({})
   const [loadingLeague, setLoadingLeague] = useState(null)
   const [linesLoading, setLinesLoading] = useState(true)
   const [error, setError] = useState(null)
@@ -337,7 +338,11 @@ function GoldContent() {
       setProgress(100)
       await new Promise(r => setTimeout(r, 300))
       setPicksCache(prev => ({ ...prev, [league]: data.picks }))
-      setPairsCache(prev => ({ ...prev, [league]: data.pairs || [] }))
+      const slips = (data.slips && data.slips.length)
+        ? data.slips
+        : (data.pairs || []).map(p => ({ size: 2, payout: 3, breakeven: 33.3, ...p }))
+      setPairsCache(prev => ({ ...prev, [league]: slips }))
+      setWarningsCache(prev => ({ ...prev, [league]: data.warnings || [] }))
     } catch (e) {
       clearInterval(creep)
       console.error('Gold fetch error:', e.message)
@@ -362,6 +367,7 @@ function GoldContent() {
   const isLoading = linesLoading || loadingLeague === selectedLeague
   const currentPicks = picksCache[selectedLeague] || []
   const currentPairs = pairsCache[selectedLeague] || []
+  const currentWarnings = warningsCache[selectedLeague] || []
 
   return (
     <div style={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
@@ -461,17 +467,24 @@ function GoldContent() {
       {!isLoading && !error && currentPicks.length > 0 && (
         <div style={{ flex: 1, overflowY: 'auto', padding: `14px 20px ${parlayPicks.length > 0 ? '76px' : '24px'}` }}>
 
+          {currentWarnings.length > 0 && (
+            <div style={{ marginBottom: '14px', padding: '10px 14px', borderRadius: '10px', border: '1px solid rgba(255,170,0,0.35)', background: 'rgba(255,170,0,0.07)', fontSize: '12px', color: '#ffca5f', lineHeight: 1.5 }}>
+              ⚠ {currentWarnings[0]}
+            </div>
+          )}
+
           {currentPairs.length > 0 && (
             <div style={{ marginBottom: '22px' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '12px' }}>
-                <span style={{ fontFamily: 'var(--font-d)', fontSize: '16px', letterSpacing: '2px', color: '#f5c842' }}>⛓ BEST PAIRINGS</span>
+                <span style={{ fontFamily: 'var(--font-d)', fontSize: '16px', letterSpacing: '2px', color: '#f5c842' }}>⛓ BEST SLIPS</span>
                 <div style={{ flex: 1, height: '1px', background: 'rgba(245,200,66,0.2)' }} />
-                <span style={{ fontSize: '11px', color: 'var(--text3)' }}>caution legs never pair · 3x pays above 33%</span>
+                <span style={{ fontSize: '11px', color: 'var(--text3)' }}>2 to 6 man power plays · caution legs never included</span>
               </div>
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: '14px' }}>
                 {currentPairs.map((pair, pi) => {
                   const bothIn = pair.legs.every(l => parlayPicks.some(p => p.id === l.id))
                   const fullyVerified = !!pair.verified
+                  const statusLabel = fullyVerified ? '✓ VERIFIED' : pair.analystDown ? '○ UNVERIFIED' : '○ NO RED FLAGS'
                   return (
                     <div key={pi} style={{
                       background: pi === 0
@@ -489,7 +502,7 @@ function GoldContent() {
                           border: fullyVerified ? '1px solid rgba(0,230,118,0.25)' : '1px solid rgba(245,200,66,0.25)',
                           padding: '3px 8px', borderRadius: '20px'
                         }}>
-                          {fullyVerified ? '✓ VERIFIED' : '○ NO RED FLAGS'}{pi === 0 ? ' · TOP PAIR' : ''}
+                          {pair.size || pair.legs.length}-MAN · {statusLabel}
                         </span>
                         <span style={{ fontFamily: 'var(--font-d)', fontSize: '22px', letterSpacing: '1px', color: '#f5c842', lineHeight: 1 }}>
                           {pair.combined}%<span style={{ fontSize: '10px', color: 'var(--text3)', letterSpacing: '0.5px', marginLeft: '4px' }}>COMBINED</span>
@@ -509,6 +522,11 @@ function GoldContent() {
                         </div>
                       ))}
 
+                      {pair.payout && (
+                        <div style={{ fontSize: '11px', color: 'var(--text3)', marginTop: '8px' }}>
+                          Power play pays <span style={{ color: '#f5c842', fontWeight: 700 }}>{pair.payout}x</span> · breakeven {pair.breakeven}% · this slip {pair.combined >= (pair.breakeven || 0) ? 'clears it' : 'is below it'}
+                        </div>
+                      )}
                       <button
                         onClick={() => addPairToParlay(pair, currentPicks)}
                         disabled={bothIn}
@@ -522,7 +540,7 @@ function GoldContent() {
                           cursor: bothIn ? 'default' : 'pointer', WebkitTapHighlightColor: 'transparent'
                         }}
                       >
-                        {bothIn ? '✓ IN PARLAY' : 'ADD BOTH TO PARLAY'}
+                        {bothIn ? '✓ IN PARLAY' : 'ADD ALL TO PARLAY'}
                       </button>
                     </div>
                   )

@@ -973,9 +973,7 @@ function teamOf(p) {
   return parts.length > 1 ? parts[1].trim().toUpperCase() : null
 }
 
-function buildPairs(picks, maxPairs = 5) {
-  const OK = ['CONFIRMED', 'NO_NEWS']
-  const elig = picks.filter(p => OK.includes(p.analysisStatus))
+function buildPairs(elig, maxPairs = 5) {
   const pairs = []
   for (let i = 0; i < elig.length; i++) {
     for (let j = i + 1; j < elig.length; j++) {
@@ -1025,6 +1023,61 @@ function pickAiLeagues(rawLines, reqLeague, REAL) {
     .sort((a, b) => b[1] - a[1])
     .slice(0, 8)
     .map(([lg]) => lg)
+}
+
+// ===== SLIPS ENGINE =====
+// Best 2- through 6-man power play combos. Legs come from analysis-clean
+// picks (CONFIRMED / NO_NEWS); if the analyst couldn't run at all, slips
+// still build from non-trap picks and are labeled unverified rather than
+// vanishing. Never two legs from the same team. Combined rates treat legs
+// as independent, shown against the power play breakeven for that size.
+const POWER_MULT = { 2: 3, 3: 5, 4: 10, 5: 20, 6: 37.5 }
+
+function slipPool(picks) {
+  const OK = ['CONFIRMED', 'NO_NEWS']
+  const verified = picks.filter(p => OK.includes(p.analysisStatus))
+  if (verified.length >= 2) return { pool: verified, analystDown: false }
+  return { pool: picks.filter(p => !p.trapRisk && p.analysisStatus !== 'CAUTION'), analystDown: true }
+}
+
+function buildSlips(picks) {
+  const { pool, analystDown } = slipPool(picks)
+  const slips = buildPairs(pool, 3).map(p => ({
+    size: 2, payout: POWER_MULT[2], breakeven: +(100 / POWER_MULT[2]).toFixed(1),
+    analystDown, ...p
+  }))
+
+  // 3- through 6-man: greedy from the strongest legs, one per team max.
+  const sorted = [...pool].sort((a, b) => b.conf - a.conf)
+  for (let k = 3; k <= 6; k++) {
+    if (sorted.length < k) break
+    const legs = []
+    const teams = new Set()
+    for (const p of sorted) {
+      const t = teamOf(p)
+      if (t && teams.has(t)) continue
+      legs.push(p)
+      if (t) teams.add(t)
+      if (legs.length === k) break
+    }
+    if (legs.length < k) break
+    const combined = Math.round(legs.reduce((acc, p) => acc * (p.conf / 100), 1) * 100)
+    slips.push({
+      size: k,
+      combined,
+      payout: POWER_MULT[k],
+      breakeven: +(100 / POWER_MULT[k]).toFixed(1),
+      verified: !analystDown && legs.every(p => p.analysisStatus === 'CONFIRMED'),
+      analystDown,
+      legs: legs.map(p => ({
+        id: p.id, name: p.name, league: p.league, team: teamOf(p),
+        stat: p.stat, val: p.val, dir: p.dir, conf: p.conf, status: p.analysisStatus
+      })),
+      why: `${k}-man power pays ${POWER_MULT[k]}x, breakeven ${(100 / POWER_MULT[k]).toFixed(1)}%` +
+        (analystDown ? ' · analyst unavailable, statuses unverified' : '')
+    })
+  }
+  return slips
 }
 
 // Gold responses are cached per league so the tab opens instantly after the
@@ -1277,8 +1330,16 @@ app.post('/gold', async (req, res) => {
     // tier from conf thresholds built for the old 0-95 AI scale.
     picks.forEach(p => { p.tier = p.nearGold ? 'NEAR GOLD' : 'GOLD' })
 
-    // Stage 3: the strongest 2-man pairings from confirmed legs only.
-    const pairs = buildPairs(picks)
+    // Stage 3: strongest slips, 2-man through 6-man.
+    const slips = buildSlips(picks)
+    const pairs = slips.filter(s => s.size === 2)
+
+    // Make analyst failures visible instead of silent.
+    const warnings = []
+    const analyzedAny = picks.some(p => ['CONFIRMED', 'NO_NEWS', 'CAUTION'].includes(p.analysisStatus))
+    if (picks.length > 0 && !analyzedAny) {
+      warnings.push('The analyst could not run on this load (AI service unavailable). Statuses and slips are unverified. Check Railway logs for the Anthropic error.')
+    }
 
     console.log('Gold stages — candidates:', candidates.length,
       '| final:', picks.length,
@@ -1286,16 +1347,16 @@ app.post('/gold', async (req, res) => {
       '| no-news:', picks.filter(p => p.analysisStatus === 'NO_NEWS').length,
       '| caution:', picks.filter(p => p.analysisStatus === 'CAUTION').length,
       '| near-gold:', picks.filter(p => p.nearGold).length,
-      '| pairings:', pairs.length)
+      '| slips:', slips.length, analyzedAny ? '' : '| ANALYST DID NOT RUN')
 
     // Track the record: every gold pick that reaches the board gets logged
     // with its FINAL (post-analysis) rating.
     logGoldPicks(picks)
 
-    const payload = { picks, pairs }
-    // Empty boards are never cached: a transient API failure or a dead slate
-    // should retry on the next load, not lock in a blank tab for 30 minutes.
-    if (picks.length > 0) goldCache[goldKey] = { data: payload, ts: Date.now() }
+    const payload = { picks, pairs, slips, warnings }
+    // Empty or analyst-less boards are never cached: transient API failures
+    // should retry on the next load, not lock in for 30 minutes.
+    if (picks.length > 0 && analyzedAny) goldCache[goldKey] = { data: payload, ts: Date.now() }
     res.json(payload)
   } catch (e) {
     console.error('Gold error:', e.message)
@@ -1316,19 +1377,15 @@ app.post('/chat', async (req, res) => {
 
     for (let i = 0; i < 10; i++) {
       if (i > 0) await sleep(3000)
-      const res2 = await fetch('https://api.anthropic.com/v1/messages', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-api-key': API_KEY, 'anthropic-version': '2023-06-01' },
-        body: JSON.stringify({
+      const res2ok = await anthropicCall({
           model: 'claude-sonnet-4-6',
           max_tokens: 4000,
           tools: [{ type: 'web_search_20250305', name: 'web_search' }],
           system: `You are the Trip Predicts AI analyst for PrizePicks. You have real live prop lines provided to you. Always use the exact line numbers from the data — never change them. Prioritize NBA, MLB, NHL, NFL, and esports. Only recommend WNBA or niche sports if explicitly asked. Look for clear statistical edges — recent form, matchup advantages, usage rates, pace of play. Be suspicious of hot streaks: a player who has cleared a line in 13 or 14 of his last 15 games usually has a line that was already raised to match the streak, which makes it a regression trap, not a lock. Only recommend picks from games in the next 36 hours. Never recommend the same player twice. Spread picks across multiple sports — never more than 2 from the same league. When recommending direction, commit to it based on data. Tiers: Regular below 75%, High 75-89%, GOLD 90%+. Never use em dashes. Bold key info with **text**.`,
           messages: current
-        })
       })
-      const data = await res2.json()
-      if (!data.content) throw new Error('No content')
+      const data = res2ok
+      if (!data || !data.content) throw new Error('No content')
       if (data.stop_reason === 'tool_use') {
         current = [...current, { role: 'assistant', content: data.content }]
         const toolResults = data.content.filter(b => b.type === 'tool_use').map(t => ({ type: 'tool_result', tool_use_id: t.id, content: `Search done for: ${t.input?.query}` }))
@@ -1400,19 +1457,14 @@ After researching all ${picks.length} legs, respond with ONLY this JSON object a
     let messages = [{ role: 'user', content: userMsg }]
     let finalText = ''
     for (let i = 0; i < 6; i++) {
-      const r = await fetch('https://api.anthropic.com/v1/messages', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-api-key': API_KEY, 'anthropic-version': '2023-06-01' },
-        body: JSON.stringify({
-          model: 'claude-sonnet-4-6',
-          max_tokens: 2000,
-          tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 8 }],
-          system: `You are a sports betting parlay analyst. Use web search to check today's matchups and each player's current status before giving a verdict. Never state injury or lineup information you did not actually find via search. Output ONLY the requested JSON as your final answer, nothing else.`,
-          messages
-        })
+      const data = await anthropicCall({
+        model: 'claude-sonnet-4-6',
+        max_tokens: 2000,
+        tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 8 }],
+        system: `You are a sports betting parlay analyst. Use web search to check today's matchups and each player's current status before giving a verdict. Never state injury or lineup information you did not actually find via search. Output ONLY the requested JSON as your final answer, nothing else.`,
+        messages
       })
-      const data = await r.json()
-      if (!data.content) throw new Error(data.error?.message || 'No content from AI')
+      if (!data || !data.content) throw new Error((data && data.error && data.error.message) || 'No content from AI')
       finalText += data.content.filter(b => b.type === 'text').map(b => b.text).join('\n')
       if (data.stop_reason === 'pause_turn') {
         messages = [...messages, { role: 'assistant', content: data.content }]
