@@ -719,7 +719,13 @@ async function aiPicks(currentTime, lines, league, rawLines, mode, pickCount) {
       ? `Spread across at least 2 different leagues. Max 2 picks per league.`
       : `Select the best ${pickCount} picks. Spread across at least 3 different sports or leagues. Max 2 picks from the same league.`)
 
-  const goldBody = `Current time: ${currentTime} ET
+  const searchLine = 'For each candidate you\'re considering, use web search to check recent form, who they\'re playing against, and current injury or lineup status. If you can\'t confirm a player\'s current status, say so or skip them rather than guessing.'
+  const noSearchLine = 'Base each pick on what you know about recent form and matchups. Be direct about uncertainty rather than overstating confidence.'
+
+  function buildBody(useSearch) {
+    const researchLine = useSearch ? searchLine : noSearchLine
+    if (gold) {
+      return `Current time: ${currentTime} ET
 
 These are REAL live PrizePicks lines. Copy line numbers exactly — never change them:
 
@@ -727,21 +733,20 @@ ${spreadRule}
 
 ${linesText}
 
-For each candidate you're considering, use web search to check recent form, who they're playing against, and current injury or lineup status. Only assign 90%+ confidence when you've actually found something in your research that supports it, not from memory or a general sense of who's good. If you can't confirm a player's current status, say so or skip them rather than guessing.
+${researchLine} Only assign 90%+ confidence when it's genuinely warranted.
 
-Find your top picks where you are genuinely 90%+ confident based on what you found. Return only picks you actually believe, even if that's a short list.
+Find your top picks where you are genuinely 90%+ confident. Return only picks you actually believe, even if that's a short list.
 
-Once your research is done, respond with ONLY this JSON array as your final message, nothing before or after it, no markdown fences:
-[{"id":1,"name":"exact player name","meta":"League · Team","stat":"exact stat","val":"exact line number","dir":"HIGHER","conf":92,"sport":"NBA","league":"NBA","initials":"PN","time":"exact time","date":"exact date","bull":"specific reason grounded in what you found, mention the opponent or matchup","bear":"real risk factor","cats":[{"n":"stat name","p":92}]}]
+${useSearch ? 'Once your research is done, respond' : 'Respond'} with ONLY this JSON array as your final message, nothing before or after it, no markdown fences:
+[{"id":1,"name":"exact player name","meta":"League · Team","stat":"exact stat","val":"exact line number","dir":"HIGHER","conf":92,"sport":"NBA","league":"NBA","initials":"PN","time":"exact time","date":"exact date","bull":"specific reason${useSearch ? ' grounded in what you found, mention the opponent or matchup' : ''}","bear":"real risk factor","cats":[{"n":"stat name","p":92}]}]
 
 Rules:
 - Copy line numbers EXACTLY — never change them
 - conf must be 90 or above — never assign below 90 on this endpoint
-- dir is HIGHER or LOWER based on what your research actually supports — never guess
-- bull must reference something concrete from your search (opponent, recent performance, matchup), not a generic statement
+- dir is HIGHER or LOWER based on real evidence — never guess
 - NEVER pick the same player twice`
-
-  const tonightBody = `Current time: ${currentTime} ET
+    }
+    return `Current time: ${currentTime} ET
 
 These are REAL live PrizePicks lines. Use ONLY these exact player names and exact line numbers:
 
@@ -749,48 +754,73 @@ ${linesText}
 
 ${spreadRule}
 
-For each candidate, use web search to check recent form, who they're playing against tonight, and current injury or lineup status before deciding a direction. If you can't confirm something, say so rather than guessing from memory.
+${researchLine}
 
-Once your research is done, respond with ONLY this JSON array as your final message, nothing before or after it, no markdown fences:
-[{"id":1,"name":"exact player name","meta":"League · Team","stat":"exact stat","val":"exact line number","dir":"HIGHER","conf":88,"sport":"NBA","league":"NBA","initials":"PN","time":"exact time","date":"exact date","bull":"specific reason grounded in what you found, mention the opponent or matchup","bear":"real risk","cats":[{"n":"stat","p":88}]}]
+${useSearch ? 'Once your research is done, respond' : 'Respond'} with ONLY this JSON array as your final message, nothing before or after it, no markdown fences:
+[{"id":1,"name":"exact player name","meta":"League · Team","stat":"exact stat","val":"exact line number","dir":"HIGHER","conf":88,"sport":"NBA","league":"NBA","initials":"PN","time":"exact time","date":"exact date","bull":"specific reason${useSearch ? ' grounded in what you found, mention the opponent or matchup' : ''}","bear":"real risk","cats":[{"n":"stat","p":88}]}]
 
 Rules:
 - Copy the line number EXACTLY — never change it
-- dir must be HIGHER or LOWER based on what your research actually supports
+- dir must be HIGHER or LOWER based on real evidence
 - conf is 50-95
-- bull must reference something concrete from your search, not a generic statement
 - NEVER pick the same player more than once
 - Give exactly ${pickCount} picks`
-
-  let messages = [{ role: 'user', content: gold ? goldBody : tonightBody }]
-  let finalText = ''
-  for (let i = 0; i < 6; i++) {
-    const response = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-api-key': API_KEY, 'anthropic-version': '2023-06-01' },
-      body: JSON.stringify({
-        model: 'claude-sonnet-4-6',
-        max_tokens: 4000,
-        tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 25 }],
-        system: `You are a PrizePicks prop analyst. Use web search to ground your picks in real, current information before committing to any of them. Output ONLY the requested JSON array as your final answer, nothing else.`,
-        messages
-      })
-    })
-    const data = await response.json()
-    if (!data.content) return []
-    finalText += data.content.filter(b => b.type === 'text').map(b => b.text).join('\n')
-    if (data.stop_reason === 'pause_turn') {
-      messages = [...messages, { role: 'assistant', content: data.content }]
-      continue
-    }
-    break
   }
 
-  const start = finalText.indexOf('[')
-  const end = finalText.lastIndexOf(']')
-  if (start === -1 || end === -1) return []
+  // Runs one full generation attempt, with or without the web_search tool.
+  // Throws with a real, specific message on any failure so the caller can
+  // decide whether to fall back rather than silently returning nothing.
+  async function attempt(useSearch) {
+    let messages = [{ role: 'user', content: buildBody(useSearch) }]
+    let finalText = ''
+    for (let i = 0; i < 6; i++) {
+      const response = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-api-key': API_KEY, 'anthropic-version': '2023-06-01' },
+        body: JSON.stringify({
+          model: 'claude-sonnet-4-6',
+          max_tokens: 4000,
+          ...(useSearch ? { tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 25 }] } : {}),
+          system: `You are a PrizePicks prop analyst.${useSearch ? ' Use web search to ground your picks in real, current information before committing to any of them.' : ''} Output ONLY the requested JSON array as your final answer, nothing else.`,
+          messages
+        })
+      })
+      const data = await response.json()
+      if (!data.content) {
+        console.error(`aiPicks (search=${useSearch}): no content —`, JSON.stringify(data).slice(0, 500))
+        throw new Error(data.error?.message || `AI returned no content: ${JSON.stringify(data).slice(0, 200)}`)
+      }
+      finalText += data.content.filter(b => b.type === 'text').map(b => b.text).join('\n')
+      if (data.stop_reason === 'pause_turn') {
+        messages = [...messages, { role: 'assistant', content: data.content }]
+        continue
+      }
+      break
+    }
+
+    const start = finalText.indexOf('[')
+    const end = finalText.lastIndexOf(']')
+    if (start === -1 || end === -1) {
+      console.error(`aiPicks (search=${useSearch}): no JSON array —`, finalText.slice(0, 500))
+      throw new Error(`AI response had no JSON array: ${finalText.slice(0, 200) || '(empty response)'}`)
+    }
+    try {
+      return JSON.parse(finalText.slice(start, end + 1))
+    } catch (e) {
+      console.error(`aiPicks (search=${useSearch}): JSON parse failed —`, e.message, '—', finalText.slice(start, start + 300))
+      throw new Error(`Could not parse AI response as JSON: ${e.message}`)
+    }
+  }
+
   let parsed
-  try { parsed = JSON.parse(finalText.slice(start, end + 1)) } catch (e) { return [] }
+  try {
+    parsed = await attempt(true)
+  } catch (e) {
+    // Web search failing shouldn't take the whole board down. Retry once
+    // without it so there's still a usable answer while this gets sorted out.
+    console.error('aiPicks: search-enabled attempt failed, retrying without search —', e.message)
+    parsed = await attempt(false)
+  }
   return validateLines(dedupe(normalizePicks(parsed)), rawLines)
 }
 
