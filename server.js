@@ -522,7 +522,7 @@ app.get('/prizepicks/all', async (req, res) => {
     // more with no feedback. 20s timeout so it fails fast and falls back to
     // cache instead.
     const controller = new AbortController()
-    const timeout = setTimeout(() => controller.abort(), 20000)
+    const timeout = setTimeout(() => controller.abort(), 45000)
     let response
     try {
       response = await fetch(`https://api.scraperapi.com?api_key=${process.env.SCRAPER_API_KEY}&url=${target}&ultra_premium=true`, { signal: controller.signal })
