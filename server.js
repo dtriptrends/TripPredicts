@@ -263,15 +263,15 @@ async function ballGamelog(player, lg, sport) {
   }
 
   // Real injury status, and for MLB, real head-to-head vs tonight's specific
-  // opponent. Both are skipped quietly on any error, a missing matchup note
-  // is not worth failing the whole card over.
+  // opponent. Run together instead of one after another. Both are skipped
+  // quietly on any error, a missing matchup note isn't worth failing the card.
   if (matchup) {
-    const injury = await checkInjury(sport.path, match.id)
+    const [injury, h2h] = await Promise.all([
+      checkInjury(sport.path, match.id),
+      lg === 'MLB' ? mlbVersus(match.id, matchup.opponentTeamId) : Promise.resolve(null)
+    ])
     if (injury && injury.status) matchup.injuryNote = injury.status
-    if (lg === 'MLB') {
-      const h2h = await mlbVersus(match.id, matchup.opponentTeamId)
-      if (h2h) matchup.headToHead = h2h
-    }
+    if (h2h) matchup.headToHead = h2h
   }
 
   return {
@@ -341,25 +341,23 @@ async function csGamelog(player, lg) {
     .sort((a, b) => new Date(b.start_time) - new Date(a.start_time))
     .slice(0, 10) // bound the per-match fan-out
 
-  const games = []
-  for (const m of pastMatches) {
+  const games = (await Promise.all(pastMatches.map(async m => {
     try {
       const sData = await bdlFetch(`https://api.balldontlie.io/cs/v1/player_match_stats?match_id=${m.id}`)
       const row = (sData.data || []).find(r => r.player && r.player.id === match.id)
-      if (row) {
-        const mapsPlayed = (Number(m.team1_score) || 0) + (Number(m.team2_score) || 0)
-        games.push({
-          kills: row.kills, deaths: row.deaths, assists: row.assists,
-          adr: row.adr, kast: row.kast, rating: row.rating,
-          headshot_percentage: row.headshot_percentage,
-          first_kills: row.first_kills, first_deaths: row.first_deaths,
-          maps_played: mapsPlayed > 0 ? mapsPlayed : 1,
-          match_id: m.id,
-          date: m.start_time || null
-        })
+      if (!row) return null
+      const mapsPlayed = (Number(m.team1_score) || 0) + (Number(m.team2_score) || 0)
+      return {
+        kills: row.kills, deaths: row.deaths, assists: row.assists,
+        adr: row.adr, kast: row.kast, rating: row.rating,
+        headshot_percentage: row.headshot_percentage,
+        first_kills: row.first_kills, first_deaths: row.first_deaths,
+        maps_played: mapsPlayed > 0 ? mapsPlayed : 1,
+        match_id: m.id,
+        date: m.start_time || null
       }
-    } catch (e) { /* skip a match that has no stats yet */ }
-  }
+    } catch (e) { return null /* skip a match that has no stats yet */ }
+  }))).filter(g => g != null)
   games.sort((a, b) => new Date(b.date || 0) - new Date(a.date || 0))
 
   // Real opponent within the next 36 hours, from the same match list already
@@ -704,194 +702,10 @@ async function getGamelog(player, lg) {
   return payload
 }
 
-// The fix for AI direction contradicting the data. For MLB/WNBA picks with a
-// real sample, the direction and confidence come from the game logs, not the
-// AI's blind guess. We bet the side the player actually hits more often, and
-// the confidence IS the real hit rate. Picks with fewer than 10 games are left
-// alone (the card hides their chart anyway).
-async function groundPicks(picks) {
-  const excluded = new Set()
-  await Promise.all(picks.map(async p => {
-    const lg = (p.league || '').toUpperCase()
-    if (!REAL_DATA_LEAGUES.includes(lg)) return
-    try {
-      const isEsport = lg === 'LOL' || lg === 'CS2'
-      const mapCount = isEsport ? mapScope(p.stat) : 1
-      const rawL = parseFloat(p.val)
-      if (isNaN(rawL)) return
-      const L = isEsport ? rawL / mapCount : rawL
-      const gl = await getGamelog(p.name, lg)
-      // A confirmed "out" designation means this pick shouldn't ship at all.
-      if (gl.matchup && isHardOut(gl.matchup.injuryNote)) { excluded.add(p.id); return }
-      const vals = ((gl && gl.games) || [])
-        .map(g => {
-          let v = bdlStatValueServer(lg, g, p.stat)
-          if (v == null || isNaN(v)) return null
-          if (lg === 'CS2') v = v / (Number(g.maps_played) || 1) // match totals -> per-map pace
-          return v
-        })
-        .filter(v => v != null)
-      if (vals.length < 10) return
-      const over = vals.filter(v => v > L).length
-      const under = vals.filter(v => v < L).length
-      const total = vals.length
-      const dir = over >= under ? 'HIGHER' : 'LOWER'
-      const hit = dir === 'HIGHER' ? over : under
-      const pct = Math.round((hit / total) * 100)
-      const unit = isEsport ? 'maps' : 'games'
-      p.dir = dir
-      p.conf = pct
-      p.realHit = hit
-      p.realTotal = total
-      p.record = `${hit} of last ${total} ${unit} cleared this line`
-      p.matchup = gl.matchup || null
-      let bull = `Real game logs back the ${dir === 'HIGHER' ? 'over' : 'under'} here. The line was cleared in ${hit} of the last ${total} ${unit} (${pct}%).`
-      if (gl.matchup) {
-        bull += gl.matchup.isHome === null
-          ? ` Vs ${gl.matchup.opponentAbbr || gl.matchup.opponentName}.`
-          : ` ${gl.matchup.isHome ? 'Home' : 'On the road'} vs ${gl.matchup.opponentAbbr || gl.matchup.opponentName}.`
-        if (gl.matchup.headToHead) bull += ` ${gl.matchup.headToHead}.`
-      }
-      p.bull = bull
-      p.bear = `This is the last ${total} ${unit} only. A tough matchup, a lineup or rotation change, or a short rest day could move it.`
-    } catch (e) { /* leave the pick untouched on any error */ }
-  }))
-  return picks.filter(p => !excluded.has(p.id))
-}
-
-// Run an async fn over items with bounded concurrency so a big slate doesn't
-// fire 50 gamelog fetches at once.
-async function mapLimit(items, limit, fn) {
-  let i = 0
-  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
-    while (i < items.length) {
-      const idx = i++
-      await fn(items[idx])
-    }
-  })
-  await Promise.all(workers)
-}
-
-// Gold floor for real-data leagues. WNBA gets a lower bar than MLB since its
-// slates are smaller and harder to clear a strict number on. This single
-// function is the ONLY source of truth, used by the scanner, the AI fallback,
-// and the final gate, so the three can never disagree again.
-function goldFloorFor(lg) {
-  if (lg === 'WNBA') return 70
-  if (lg === 'MLB') return 80
-  if (lg === 'LOL' || lg === 'CS2') return 75
-  return 90
-}
-
-// Build a frontend-shaped pick straight from real game-log math.
-function buildRealPick(l, lg, dir, hit, total, pct, matchup, unit = 'games') {
-  const name = l.name
-  const initials = (name || 'XX').split(' ').map(w => w[0]).join('').substring(0, 2).toUpperCase()
-  const ou = dir === 'HIGHER' ? 'over' : 'under'
-  let bull = `Real game logs back the ${ou}. The line was cleared in ${hit} of the last ${total} ${unit} (${pct}%).`
-  if (matchup) {
-    bull += matchup.isHome === null
-      ? ` Vs ${matchup.opponentAbbr || matchup.opponentName}.`
-      : ` ${matchup.isHome ? 'Home' : 'On the road'} vs ${matchup.opponentAbbr || matchup.opponentName}.`
-    if (matchup.headToHead) bull += ` ${matchup.headToHead}.`
-  }
-  return {
-    id: `real-${lg}-${name}-${l.stat}-${l.line}`.replace(/\s+/g, '_'),
-    name,
-    meta: `${lg}${l.team ? ' · ' + l.team : ''}`,
-    stat: l.stat,
-    val: String(l.line),
-    dir,
-    conf: pct,
-    sport: lg,
-    league: lg,
-    initials,
-    image: l.image || null,
-    bull,
-    bear: `Based on the last ${total} ${unit}. A tough matchup, a lineup or rotation change, or a rest day could move it.`,
-    record: `${hit} of last ${total} ${unit} cleared this line`,
-    cats: [{ n: l.stat, p: pct }],
-    time: l.start_time || null,
-    date: l.date || null,
-    oddsType: l.oddsType || null,
-    altLines: l.altLines || null,
-    realHit: hit,
-    realTotal: total,
-    matchup: matchup || null
-  }
-}
-
-// The real engine for MLB/WNBA. Walk the actual slate, pull ONE gamelog per
-// player, and for every verifiable prop compute the true hit rate and the side
-// that hits more. Returns built picks at or above floorPct, strongest first.
-async function realScan(lines, league, floorPct, maxPerPlayer = 2, maxTotal = 20) {
-  const lg = league.toUpperCase()
-  const cands = (lines || []).filter(l =>
-    (l.league || '').toUpperCase() === lg && l.name && l.stat && l.line != null &&
-    (!l.oddsType || l.oddsType === 'standard') &&
-    !l.name.includes('+'))  // combo props (two players) can't be verified from one game log
-  if (!cands.length) return []
-
-  const byPlayer = {}
-  cands.forEach(l => { (byPlayer[l.name] = byPlayer[l.name] || []).push(l) })
-  const names = Object.keys(byPlayer).slice(0, 50) // bound the fetch fan-out
-
-  const collected = []
-  await mapLimit(names, 8, async name => {
-    try {
-      const gl = await getGamelog(name, lg)
-      const games = (gl && gl.games) || []
-      if (games.length < 10) return
-      // A confirmed "out" designation means this pick shouldn't be made at
-      // all, no confidence number is meaningful for a player who isn't playing.
-      const matchup = gl.matchup || null
-      if (matchup && isHardOut(matchup.injuryNote)) return
-      const picks = []
-      const seenStat = new Set()
-      const isEsport = lg === 'LOL' || lg === 'CS2'
-      const unit = isEsport ? 'maps' : 'games'
-      for (const l of byPlayer[name]) {
-        const statKey = String(l.stat).toLowerCase()
-        if (seenStat.has(statKey)) continue
-        const rawL = parseFloat(l.line)
-        if (isNaN(rawL)) continue
-        const mapCount = isEsport ? mapScope(l.stat) : 1
-        const L = isEsport ? rawL / mapCount : rawL
-        const vals = games
-          .map(g => {
-            let v = bdlStatValueServer(lg, g, l.stat)
-            if (v == null || isNaN(v)) return null
-            if (lg === 'CS2') v = v / (Number(g.maps_played) || 1) // match totals -> per-map pace
-            return v
-          })
-          .filter(v => v != null)
-        if (vals.length < 10) continue
-        seenStat.add(statKey)
-        const over = vals.filter(v => v > L).length
-        const under = vals.filter(v => v < L).length
-        const total = vals.length
-        const dir = over >= under ? 'HIGHER' : 'LOWER'
-        const hit = dir === 'HIGHER' ? over : under
-        const pct = Math.round((hit / total) * 100)
-        if (pct < floorPct) continue
-        // A perfect read is only suspicious if it came from a bug. Combo props
-        // (two players) and fantasy scores, the two things that used to fake a
-        // 100%, are already excluded above and in bdlStatValueServer. A single,
-        // correctly-mapped stat genuinely clearing every game (common on low
-        // MLB lines like Hits 0.5) is real evidence, not an error.
-        picks.push(buildRealPick(l, lg, dir, hit, total, pct, matchup, unit))
-      }
-      picks.sort((a, b) => b.conf - a.conf)
-      collected.push(...picks.slice(0, maxPerPlayer))
-    } catch (e) { /* skip this player on any error */ }
-  })
-
-  collected.sort((a, b) => b.conf - a.conf)
-  return collected.slice(0, maxTotal)
-}
-
-// AI pick generation for sports WITHOUT real data. MLB/WNBA are handled by the
-// scanner and excluded here.
+// The single pick-generation engine now, for every sport. Claude researches
+// each candidate with real web search (recent form, matchup, injury status)
+// before committing to a direction and confidence, rather than a mechanical
+// game-log scan. No BALLDONTLIE grounding runs afterward to override it.
 async function aiPicks(currentTime, lines, league, rawLines, mode, pickCount) {
   if (!lines.length) return []
   const linesText = lines.map(l =>
@@ -902,73 +716,82 @@ async function aiPicks(currentTime, lines, league, rawLines, mode, pickCount) {
   const spreadRule = league
     ? (gold ? `All picks must be from ${league}.` : `All picks must be from ${league}. Select the best ${pickCount} picks from the lines above.`)
     : (gold
-      ? `Prioritize NBA, NHL, NFL, esports. Spread across AT LEAST 2 different leagues. Max 2 picks per league.`
-      : `Select the best ${pickCount} picks. Spread across AT LEAST 3 different sports or leagues. Max 2 picks from the same league. Prioritize NBA, NHL, NFL, esports.`)
+      ? `Spread across at least 2 different leagues. Max 2 picks per league.`
+      : `Select the best ${pickCount} picks. Spread across at least 3 different sports or leagues. Max 2 picks from the same league.`)
 
   const goldBody = `Current time: ${currentTime} ET
 
-These are REAL live PrizePicks lines. Find the highest confidence picks at 90%+ confidence only. Copy line numbers exactly — never change them:
+These are REAL live PrizePicks lines. Copy line numbers exactly — never change them:
 
 ${spreadRule}
 
 ${linesText}
 
-Find your top picks where you are genuinely 90%+ confident based on recent player performance and matchup. Only assign 90%+ confidence when genuinely warranted.
+For each candidate you're considering, use web search to check recent form, who they're playing against, and current injury or lineup status. Only assign 90%+ confidence when you've actually found something in your research that supports it, not from memory or a general sense of who's good. If you can't confirm a player's current status, say so or skip them rather than guessing.
 
-Output ONLY this JSON array:
-[{"id":1,"name":"exact player name","meta":"League · Team","stat":"exact stat","val":"exact line number","dir":"HIGHER","conf":92,"sport":"NBA","league":"NBA","initials":"PN","time":"exact time","date":"exact date","bull":"specific reason why this hits","bear":"real risk factor","record":"Hit this line in 12 of his last 15 games","cats":[{"n":"stat name","p":92}]}]
+Find your top picks where you are genuinely 90%+ confident based on what you found. Return only picks you actually believe, even if that's a short list.
+
+Once your research is done, respond with ONLY this JSON array as your final message, nothing before or after it, no markdown fences:
+[{"id":1,"name":"exact player name","meta":"League · Team","stat":"exact stat","val":"exact line number","dir":"HIGHER","conf":92,"sport":"NBA","league":"NBA","initials":"PN","time":"exact time","date":"exact date","bull":"specific reason grounded in what you found, mention the opponent or matchup","bear":"real risk factor","cats":[{"n":"stat name","p":92}]}]
 
 Rules:
 - Copy line numbers EXACTLY — never change them
 - conf must be 90 or above — never assign below 90 on this endpoint
-- dir is HIGHER or LOWER based on real statistical evidence — never guess
-- Vary stat categories. Mix in 3-pointers made, shot attempts, steals, blocks, turnovers and other categories
-- NEVER pick the same player twice
-- Return only picks you genuinely believe, even if that is a short list`
+- dir is HIGHER or LOWER based on what your research actually supports — never guess
+- bull must reference something concrete from your search (opponent, recent performance, matchup), not a generic statement
+- NEVER pick the same player twice`
 
   const tonightBody = `Current time: ${currentTime} ET
 
-These are REAL live PrizePicks lines. Use ONLY these exact player names and exact line numbers — copy the number after the colon exactly, do not change it:
+These are REAL live PrizePicks lines. Use ONLY these exact player names and exact line numbers:
 
 ${linesText}
 
 ${spreadRule}
 
-For each pick, determine direction (HIGHER or LOWER) based on concrete statistical evidence. Once you decide a direction, commit to it.
+For each candidate, use web search to check recent form, who they're playing against tonight, and current injury or lineup status before deciding a direction. If you can't confirm something, say so rather than guessing from memory.
 
-Output ONLY this JSON array:
-[{"id":1,"name":"exact player name","meta":"League · Team","stat":"exact stat","val":"exact line number","dir":"HIGHER","conf":88,"sport":"NBA","league":"NBA","initials":"PN","time":"exact time","date":"exact date","bull":"specific reason","bear":"real risk","record":"12 of last 15 games cleared this line","cats":[{"n":"stat","p":88}]}]
+Once your research is done, respond with ONLY this JSON array as your final message, nothing before or after it, no markdown fences:
+[{"id":1,"name":"exact player name","meta":"League · Team","stat":"exact stat","val":"exact line number","dir":"HIGHER","conf":88,"sport":"NBA","league":"NBA","initials":"PN","time":"exact time","date":"exact date","bull":"specific reason grounded in what you found, mention the opponent or matchup","bear":"real risk","cats":[{"n":"stat","p":88}]}]
 
 Rules:
 - Copy the line number EXACTLY — never change it
-- dir must be HIGHER or LOWER based on clear statistical evidence
+- dir must be HIGHER or LOWER based on what your research actually supports
 - conf is 50-95
-- Vary stat categories. Mix in 3-pointers made, shot attempts, steals, blocks, turnovers and others
+- bull must reference something concrete from your search, not a generic statement
 - NEVER pick the same player more than once
 - Give exactly ${pickCount} picks`
 
-  const response = await fetch('https://api.anthropic.com/v1/messages', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'x-api-key': API_KEY, 'anthropic-version': '2023-06-01' },
-    body: JSON.stringify({
-      model: 'claude-sonnet-4-6',
-      max_tokens: 4000,
-      system: `You are a PrizePicks prop analyst. Output ONLY a valid JSON array. No text before or after. Start with [ end with ].`,
-      messages: [{ role: 'user', content: gold ? goldBody : tonightBody }]
+  let messages = [{ role: 'user', content: gold ? goldBody : tonightBody }]
+  let finalText = ''
+  for (let i = 0; i < 6; i++) {
+    const response = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-api-key': API_KEY, 'anthropic-version': '2023-06-01' },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-6',
+        max_tokens: 4000,
+        tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 25 }],
+        system: `You are a PrizePicks prop analyst. Use web search to ground your picks in real, current information before committing to any of them. Output ONLY the requested JSON array as your final answer, nothing else.`,
+        messages
+      })
     })
-  })
+    const data = await response.json()
+    if (!data.content) return []
+    finalText += data.content.filter(b => b.type === 'text').map(b => b.text).join('\n')
+    if (data.stop_reason === 'pause_turn') {
+      messages = [...messages, { role: 'assistant', content: data.content }]
+      continue
+    }
+    break
+  }
 
-  const data = await response.json()
-  if (!data.content) return []
-  const textBlock = data.content.find(b => b.type === 'text')
-  if (!textBlock) return []
-  const start = textBlock.text.indexOf('[')
-  const end = textBlock.text.lastIndexOf(']')
+  const start = finalText.indexOf('[')
+  const end = finalText.lastIndexOf(']')
   if (start === -1 || end === -1) return []
   let parsed
-  try { parsed = JSON.parse(textBlock.text.slice(start, end + 1)) } catch (e) { return [] }
-  const grounded = await groundPicks(validateLines(dedupe(normalizePicks(parsed)), rawLines))
-  return grounded
+  try { parsed = JSON.parse(finalText.slice(start, end + 1)) } catch (e) { return [] }
+  return validateLines(dedupe(normalizePicks(parsed)), rawLines)
 }
 
 app.post('/picks', async (req, res) => {
@@ -980,36 +803,13 @@ app.post('/picks', async (req, res) => {
     if (!lines || lines.length === 0) throw new Error('No lines provided')
 
     const reqLeague = league ? league.toUpperCase() : null
-    const REAL = REAL_DATA_LEAGUES
-    let picks = []
 
-    // Real-data scanner for all verified leagues (lower floor than gold so the board has range).
-    const scanLgs = reqLeague ? (REAL.includes(reqLeague) ? [reqLeague] : []) : REAL
-    for (const lg of scanLgs) {
-      const scanned = await realScan(rawLines, lg, 60, 2, 15)
-      picks = picks.concat(scanned)
-      // If a real scanner comes back empty (e.g. all combo props, or a thin
-      // esports schedule), fall through to AI so the board still has cards.
-      if (scanned.length === 0) {
-        const lgLines = rawLines.filter(l => (l.league || '').toUpperCase() === lg)
-        if (lgLines.length > 0) {
-          const fallbackAI = await aiPicks(currentTime, lgLines, lg, rawLines, 'tonight', pickCount)
-          picks = picks.concat(fallbackAI)
-          console.log(`${lg} real scanner empty — AI fallback, got`, fallbackAI.length, 'picks')
-        }
-      }
-    }
-
-    // AI for everything else. Real-data leagues are excluded so the AI never guesses them.
-    const doAI = reqLeague ? !REAL.includes(reqLeague) : true
-    if (doAI) {
-      const aiLines = reqLeague ? lines : lines.filter(l => !REAL.includes((l.league || '').toUpperCase()))
-      picks = picks.concat(await aiPicks(currentTime, aiLines, reqLeague, rawLines, 'tonight', pickCount))
-    }
+    // Every league, every pick, goes through the same research-driven AI
+    // analyst now. No BALLDONTLIE game-log scanning, no per-league branching.
+    const picks = await aiPicks(currentTime, lines, reqLeague, rawLines, 'tonight', pickCount)
 
     picks.sort((a, b) => b.conf - a.conf)
-    picks = picks.slice(0, 40)
-    console.log('Got', picks.length, 'picks (', picks.filter(p => REAL.includes(p.league)).length, 'real )')
+    console.log('Got', picks.length, 'picks')
     res.json({ picks })
   } catch (e) {
     console.error('Picks error:', e.message)
@@ -1025,42 +825,15 @@ app.post('/gold', async (req, res) => {
     if (!lines || lines.length === 0) throw new Error('No lines provided')
 
     const reqLeague = league ? league.toUpperCase() : null
-    const REAL = REAL_DATA_LEAGUES
-    let picks = []
 
-    // Gold from real data: strongest verified plays. WNBA and esports get a
-    // lower floor than MLB since their slates are smaller and noisier.
-    const scanLgs = reqLeague ? (REAL.includes(reqLeague) ? [reqLeague] : []) : REAL
-    for (const lg of scanLgs) {
-      const floor = goldFloorFor(lg)
-      const scanned = await realScan(rawLines, lg, floor, 2)
-      picks = picks.concat(scanned)
-      // If the real scanner came back empty (e.g. an all-combo-prop slate, or
-      // a thin esports schedule), fall back to AI so the board isn't blank.
-      if (scanned.length === 0) {
-        const lgLines = rawLines.filter(l => (l.league || '').toUpperCase() === lg)
-        if (lgLines.length > 0) {
-          const fallbackAI = await aiPicks(currentTime, lgLines, lg, rawLines, 'gold')
-          picks = picks.concat(fallbackAI.filter(p => p.conf >= floor))
-          console.log(`${lg} real scanner empty — used AI fallback, got`, fallbackAI.length, 'picks')
-        }
-      }
-    }
-
-    // AI gold for sports without real data (real leagues excluded so no blind guesses).
-    const doAI = reqLeague ? !REAL.includes(reqLeague) : true
-    if (doAI) {
-      const aiLines = reqLeague ? lines : lines.filter(l => !REAL.includes((l.league || '').toUpperCase()))
-      const aiGold = await aiPicks(currentTime, aiLines, reqLeague, rawLines, 'gold')
-      picks = picks.concat(aiGold.filter(p => p.conf >= 90)) // non-real sports keep the 90% bar
-    }
-
-    // Final gate: every pick must clear its floor regardless of how it got here.
-    picks = picks.filter(p => p.conf >= goldFloorFor((p.league || '').toUpperCase()))
+    // Same research-driven analyst as Tonight, filtered to a uniform 90% bar.
+    // No BALLDONTLIE scanning, no per-league floors.
+    const aiGold = await aiPicks(currentTime, lines, reqLeague, rawLines, 'gold')
+    const picks = aiGold.filter(p => p.conf >= 90)
 
     picks.sort((a, b) => b.conf - a.conf)
     picks = picks.slice(0, 30)
-    console.log('Got', picks.length, 'gold picks (', picks.filter(p => REAL.includes(p.league)).length, 'real )')
+    console.log('Got', picks.length, 'gold picks')
     res.json({ picks })
   } catch (e) {
     console.error('Gold error:', e.message)
