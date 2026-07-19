@@ -829,7 +829,7 @@ app.post('/gold', async (req, res) => {
     // Same research-driven analyst as Tonight, filtered to a uniform 90% bar.
     // No BALLDONTLIE scanning, no per-league floors.
     const aiGold = await aiPicks(currentTime, lines, reqLeague, rawLines, 'gold')
-    const picks = aiGold.filter(p => p.conf >= 90)
+    let picks = aiGold.filter(p => p.conf >= 90)
 
     picks.sort((a, b) => b.conf - a.conf)
     picks = picks.slice(0, 30)
