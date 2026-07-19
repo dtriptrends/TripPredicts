@@ -3,7 +3,7 @@ import React, { useState, useEffect, useMemo } from 'react'
 const SERVER = 'https://trippredicts-production-cfad.up.railway.app'
 
 // Sports with real game-by-game data wired in (BALLDONTLIE).
-const REAL_DATA_LEAGUES = ['MLB', 'WNBA']
+const REAL_DATA_LEAGUES = ['MLB', 'WNBA', 'LOL', 'CS2']
 
 // Never show a real-data chart on a tiny sample. Hide it until we have enough.
 const MIN_REAL_GAMES = 10
@@ -301,37 +301,33 @@ export default function PickCard({ pick, delay = 0, selected = false, onTogglePa
                 animation: `flicker${fc.type} ${fc.dur} ${fc.delay} ease-in-out infinite alternate`,
               }} />
             ))}
-            <div style={{ position: 'absolute', bottom: 0, left: '3%', right: '3%', height: '22px', background: 'radial-gradient(ellipse at bottom, rgba(255,50,0,0.6), rgba(255,100,0,0.25) 55%, transparent 80%)', filter: 'blur(8px)' }} />
           </div>
-
-          <div style={{ position: 'absolute', top: 0, bottom: '20px', left: '-18px', width: '28px', pointerEvents: 'none', zIndex: 10 }}>
+          <div style={{ position: 'absolute', top: '20%', bottom: 0, left: '-14px', width: '30px', pointerEvents: 'none', zIndex: 10, overflow: 'hidden' }}>
             {LEFT_FLAMES.map((fc, i) => (
               <div key={i} style={{
-                position: 'absolute', left: '4px', bottom: fc.bottom,
+                position: 'absolute', bottom: fc.bottom, left: 0,
                 width: `${fc.w}px`, height: `${fc.h}px`,
                 background: FLAME_GRADIENTS[fc.type],
                 borderRadius: '50% 50% 20% 20%',
-                filter: 'blur(4px)',
-                transform: 'rotate(-90deg)',
-                animation: `flickerSide${i % 2} ${fc.dur} ${fc.delay} ease-in-out infinite alternate`,
+                filter: 'blur(3px)',
+                transformOrigin: 'bottom center',
+                animation: `flickerSide0 ${fc.dur} ${fc.delay} ease-in-out infinite alternate`,
               }} />
             ))}
           </div>
-
-          <div style={{ position: 'absolute', top: 0, bottom: '20px', right: '-18px', width: '28px', pointerEvents: 'none', zIndex: 10 }}>
+          <div style={{ position: 'absolute', top: '20%', bottom: 0, right: '-14px', width: '30px', pointerEvents: 'none', zIndex: 10, overflow: 'hidden' }}>
             {RIGHT_FLAMES.map((fc, i) => (
               <div key={i} style={{
-                position: 'absolute', right: '4px', bottom: fc.bottom,
+                position: 'absolute', bottom: fc.bottom, right: 0,
                 width: `${fc.w}px`, height: `${fc.h}px`,
                 background: FLAME_GRADIENTS[fc.type],
                 borderRadius: '50% 50% 20% 20%',
-                filter: 'blur(4px)',
-                transform: 'rotate(90deg)',
-                animation: `flickerSide${(i + 1) % 2} ${fc.dur} ${fc.delay} ease-in-out infinite alternate`,
+                filter: 'blur(3px)',
+                transformOrigin: 'bottom center',
+                animation: `flickerSide1 ${fc.dur} ${fc.delay} ease-in-out infinite alternate`,
               }} />
             ))}
           </div>
-
           <div style={{ position: 'absolute', inset: '-2px', bottom: '18px', borderRadius: '18px', pointerEvents: 'none', zIndex: 0, animation: 'outerFireGlow 2s ease infinite' }} />
         </>
       )}
@@ -417,6 +413,36 @@ export default function PickCard({ pick, delay = 0, selected = false, onTogglePa
         <div style={{ padding: '12px 13px 10px' }}>
           <div style={{ fontFamily: "'Barlow Condensed',sans-serif", fontSize: '15px', fontWeight: 700, color: '#eef2ff', letterSpacing: '0.5px', lineHeight: 1.1 }}>{pick.name}</div>
           <div style={{ fontSize: '11px', color: '#7a8aaa', marginTop: '2px' }}>{pick.meta}</div>
+
+          {/* Matchup context — opponent, home/away, injury status, real head-to-head */}
+          {pick.matchup && (
+            <div style={{
+              display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '6px',
+              marginTop: '5px', marginBottom: '2px'
+            }}>
+              <span style={{
+                fontSize: '10px', fontFamily: "'Barlow Condensed',sans-serif", fontWeight: 600,
+                color: '#7a8aaa', background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)',
+                borderRadius: '6px', padding: '2px 7px'
+              }}>
+                {pick.matchup.isHome === null ? 'vs' : pick.matchup.isHome ? 'vs' : '@'} {pick.matchup.opponentAbbr || pick.matchup.opponentName}
+              </span>
+              {pick.matchup.headToHead && (
+                <span style={{
+                  fontSize: '10px', fontFamily: "'Barlow Condensed',sans-serif", fontWeight: 600,
+                  color: '#4a90d9', background: 'rgba(74,144,217,0.1)', border: '1px solid rgba(74,144,217,0.25)',
+                  borderRadius: '6px', padding: '2px 7px'
+                }}>{pick.matchup.headToHead}</span>
+              )}
+              {pick.matchup.injuryNote && (
+                <span style={{
+                  fontSize: '10px', fontFamily: "'Barlow Condensed',sans-serif", fontWeight: 700,
+                  color: '#f5c842', background: 'rgba(245,200,66,0.1)', border: '1px solid rgba(245,200,66,0.3)',
+                  borderRadius: '6px', padding: '2px 7px'
+                }}>{pick.matchup.injuryNote}</span>
+              )}
+            </div>
+          )}
 
           {/* Real data panel (MLB / WNBA) replaces the AI record badge */}
           {hasRealData ? (
@@ -571,6 +597,18 @@ export default function PickCard({ pick, delay = 0, selected = false, onTogglePa
                       <span style={{ fontSize: '8px', color: r.cleared ? '#15d68f' : '#ef4444' }}>{r.cleared ? '✓' : '✗'}</span>
                     </div>
                   ))}
+                </div>
+              </div>
+            )}
+
+            {/* Matchup detail block, expanded */}
+            {pick.matchup && (
+              <div style={{ marginBottom: '10px' }}>
+                <div style={{ fontSize: '9px', color: isGold ? 'rgba(255,110,0,0.6)' : '#3a4a6a', textTransform: 'uppercase', letterSpacing: '1.5px', marginBottom: '4px', fontFamily: "'Barlow Condensed',sans-serif", fontWeight: 600 }}>Matchup</div>
+                <div style={{ fontSize: '12px', color: '#7a8aaa', lineHeight: 1.55 }}>
+                  {pick.matchup.isHome === null ? '' : pick.matchup.isHome ? 'Home ' : 'Away '}vs {pick.matchup.opponentName || pick.matchup.opponentAbbr}
+                  {pick.matchup.headToHead ? ` · ${pick.matchup.headToHead}` : ''}
+                  {pick.matchup.injuryNote ? ` · ${pick.matchup.injuryNote}` : ''}
                 </div>
               </div>
             )}
