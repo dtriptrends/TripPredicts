@@ -708,9 +708,24 @@ async function getGamelog(player, lg) {
 // game-log scan. No BALLDONTLIE grounding runs afterward to override it.
 async function aiPicks(currentTime, lines, league, rawLines, mode, pickCount) {
   if (!lines.length) return []
-  const linesText = lines.map(l =>
-    `${l.name} (${l.league} · ${l.team}) | ${l.stat}: ${l.line} | ${l.date} ${l.start_time}`
-  ).join('\n')
+
+  // Grouped by team + date + time instead of a flat list. Two teams sharing
+  // a start time are very likely playing each other, this gives the model a
+  // structural head start on spotting the actual games before it has to
+  // search to confirm who's playing whom.
+  const bySlate = {}
+  lines.forEach(l => {
+    const key = `${l.date} ${l.start_time}`
+    if (!bySlate[key]) bySlate[key] = {}
+    if (!bySlate[key][l.team]) bySlate[key][l.team] = []
+    bySlate[key][l.team].push(l)
+  })
+  const linesText = Object.entries(bySlate).map(([slate, teams]) => {
+    const teamBlocks = Object.entries(teams).map(([team, rows]) =>
+      `  ${team}:\n` + rows.map(l => `    ${l.name} (${l.league}) | ${l.stat}: ${l.line}`).join('\n')
+    ).join('\n')
+    return `${slate}:\n${teamBlocks}`
+  }).join('\n\n')
 
   const gold = mode === 'gold'
   const spreadRule = league
@@ -719,50 +734,63 @@ async function aiPicks(currentTime, lines, league, rawLines, mode, pickCount) {
       ? `Spread across at least 2 different leagues. Max 2 picks per league.`
       : `Select the best ${pickCount} picks. Spread across at least 3 different sports or leagues. Max 2 picks from the same league.`)
 
-  const searchLine = 'For each candidate you\'re considering, use web search to check recent form, who they\'re playing against, and current injury or lineup status. If you can\'t confirm a player\'s current status, say so or skip them rather than guessing.'
-  const noSearchLine = 'Base each pick on what you know about recent form and matchups. Be direct about uncertainty rather than overstating confidence.'
+  const searchLine = 'Use web search for each step below rather than relying on memory. If you can\'t confirm something, say so or skip that player rather than guessing.'
+  const noSearchLine = 'Reason from what you know about recent form and matchups. Be direct about uncertainty rather than overstating confidence.'
+
+  const matchupSteps = `All of these lines are for games within the next 36 hours, grouped above by tip-off/first-pitch time and team. Work in this order:
+
+1. MAP THE GAMES. Teams listed under the same time slot are very likely playing each other. Confirm the actual matchups (who's playing whom) and which team is home vs away for each.
+2. RESEARCH EACH MATCHUP. For the games with real candidates, check: each team's recent form, key injuries or lineup news, and anything about the matchup itself (a weak defense, a struggling pitcher, a pace/style edge, home/away splits).
+3. FIND THE STRONGEST PLAYER PER MATCHUP. Within each game, compare the available candidates against each other and against what the matchup actually favors, don't evaluate players in isolation from their opponent. A player's own hot streak matters less than a hot streak against a specific opponent that lets it continue.
+4. ONLY THEN assign direction and confidence, based on step 3, not on name recognition or general reputation.`
 
   function buildBody(useSearch) {
     const researchLine = useSearch ? searchLine : noSearchLine
     if (gold) {
       return `Current time: ${currentTime} ET
 
-These are REAL live PrizePicks lines. Copy line numbers exactly — never change them:
+These are REAL live PrizePicks lines, grouped by game time and team. Copy line numbers exactly — never change them:
 
 ${spreadRule}
 
 ${linesText}
 
-${researchLine} Only assign 90%+ confidence when it's genuinely warranted.
+${matchupSteps}
 
-Find your top picks where you are genuinely 90%+ confident. Return only picks you actually believe, even if that's a short list.
+${researchLine} Only assign 90%+ confidence when the matchup research genuinely supports it.
+
+Return only picks you actually believe after this process, even if that's a short list.
 
 ${useSearch ? 'Once your research is done, respond' : 'Respond'} with ONLY this JSON array as your final message, nothing before or after it, no markdown fences:
-[{"id":1,"name":"exact player name","meta":"League · Team","stat":"exact stat","val":"exact line number","dir":"HIGHER","conf":92,"sport":"NBA","league":"NBA","initials":"PN","time":"exact time","date":"exact date","bull":"specific reason${useSearch ? ' grounded in what you found, mention the opponent or matchup' : ''}","bear":"real risk factor","cats":[{"n":"stat name","p":92}]}]
+[{"id":1,"name":"exact player name","meta":"League · Team","stat":"exact stat","val":"exact line number","dir":"HIGHER","conf":92,"sport":"NBA","league":"NBA","initials":"PN","time":"exact time","date":"exact date","bull":"specific reason naming the opponent and what the matchup favors","bear":"real risk factor","cats":[{"n":"stat name","p":92}]}]
 
 Rules:
 - Copy line numbers EXACTLY — never change them
 - conf must be 90 or above — never assign below 90 on this endpoint
-- dir is HIGHER or LOWER based on real evidence — never guess
+- dir is HIGHER or LOWER based on the matchup research — never guess
+- bull must name the actual opponent and cite something concrete about the matchup, not a generic statement about the player alone
 - NEVER pick the same player twice`
     }
     return `Current time: ${currentTime} ET
 
-These are REAL live PrizePicks lines. Use ONLY these exact player names and exact line numbers:
+These are REAL live PrizePicks lines, grouped by game time and team. Use ONLY these exact player names and exact line numbers:
 
 ${linesText}
 
 ${spreadRule}
 
+${matchupSteps}
+
 ${researchLine}
 
 ${useSearch ? 'Once your research is done, respond' : 'Respond'} with ONLY this JSON array as your final message, nothing before or after it, no markdown fences:
-[{"id":1,"name":"exact player name","meta":"League · Team","stat":"exact stat","val":"exact line number","dir":"HIGHER","conf":88,"sport":"NBA","league":"NBA","initials":"PN","time":"exact time","date":"exact date","bull":"specific reason${useSearch ? ' grounded in what you found, mention the opponent or matchup' : ''}","bear":"real risk","cats":[{"n":"stat","p":88}]}]
+[{"id":1,"name":"exact player name","meta":"League · Team","stat":"exact stat","val":"exact line number","dir":"HIGHER","conf":88,"sport":"NBA","league":"NBA","initials":"PN","time":"exact time","date":"exact date","bull":"specific reason naming the opponent and what the matchup favors","bear":"real risk","cats":[{"n":"stat","p":88}]}]
 
 Rules:
 - Copy the line number EXACTLY — never change it
-- dir must be HIGHER or LOWER based on real evidence
+- dir must be HIGHER or LOWER based on the matchup research
 - conf is 50-95
+- bull must name the actual opponent and cite something concrete about the matchup, not a generic statement about the player alone
 - NEVER pick the same player more than once
 - Give exactly ${pickCount} picks`
   }
