@@ -396,11 +396,32 @@ app.get('/prizepicks/all', async (req, res) => {
       return res.json(ppCache.data)
     }
     const target = encodeURIComponent(`https://api.prizepicks.com/projections?per_page=250&single_stat=true`)
-    const response = await fetch(`https://api.scraperapi.com?api_key=${process.env.SCRAPER_API_KEY}&url=${target}&ultra_premium=true`)
-    const data = await response.json()
+    // A hanging ScraperAPI call used to block this request indefinitely with
+    // no feedback. 45s timeout (ultra_premium mode legitimately needs more
+    // than 20s sometimes) so it fails fast and falls back to cache instead.
+    const controller = new AbortController()
+    const timeout = setTimeout(() => controller.abort(), 45000)
+    let response
+    try {
+      response = await fetch(`https://api.scraperapi.com?api_key=${process.env.SCRAPER_API_KEY}&url=${target}&ultra_premium=true`, { signal: controller.signal })
+    } finally {
+      clearTimeout(timeout)
+    }
+    if (!response.ok) throw new Error(`ScraperAPI returned ${response.status}`)
+    const raw = await response.text()
+    let data
+    try {
+      data = JSON.parse(raw)
+    } catch (e) {
+      // ScraperAPI/PrizePicks sent back plain text (an error page, a rate
+      // limit notice, etc.) instead of JSON. Surface exactly what it said
+      // instead of a generic "Unexpected token" parse error.
+      throw new Error(`ScraperAPI did not return JSON: ${raw.slice(0, 200)}`)
+    }
     ppCache = { data, ts: now }
     res.json(data)
   } catch (e) {
+    console.error('PrizePicks fetch error:', e.message)
     if (ppCache.data) return res.json(ppCache.data)
     res.status(500).json({ error: e.message })
   }
