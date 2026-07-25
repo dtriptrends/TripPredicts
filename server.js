@@ -67,19 +67,6 @@ app.use(express.json({ limit: '10mb' }))
 // ===== REAL STATS FROM BALLDONTLIE =====
 const BDL_KEY = process.env.BALLDONTLIE_KEY
 
-// path          = BDL league slug (note: Counter-Strike is "cs", not "cs2")
-// statsPath      = per-game stats endpoint. Differs per sport and was the WNBA 404:
-//                 MLB is /stats, WNBA is /player_stats.
-// needsGameDates = MLB stat rows carry no date and /mlb/v1/stats has no date,
-//                 sort, or season_type filter, so it mixes spring training in with
-//                 the regular season. We join real dates from /mlb/v1/games
-//                 (season_type=regular) to order by date and drop spring training.
-//                 WNBA rows already carry a real game.date, so no join needed.
-// kind           = which fetch strategy to use. ball sports (MLB/WNBA) have a
-//                 player-centric stats endpoint. LoL has player_match_map_stats
-//                 with a player_id filter (one call). CS2 has no player endpoint,
-//                 so we go player -> team -> recent matches -> per-match stats.
-//                 LoL and CS2 stat logs require the GOAT tier.
 const BDL_SPORTS = {
   MLB:  { path: 'mlb',  statsPath: 'stats',        season: 2026, supported: true, needsGameDates: true,  kind: 'ball' },
   WNBA: { path: 'wnba', statsPath: 'player_stats', season: 2026, supported: true, needsGameDates: false, kind: 'ball' },
@@ -96,8 +83,6 @@ async function bdlFetch(url) {
   return r.json()
 }
 
-// Pull every row across pages (cursor pagination), capped so one slow player
-// can't fan out forever. Three pages of 100 covers a full MLB season.
 async function bdlFetchAll(baseUrl, maxPages = 3) {
   let all = []
   let cursor = null
@@ -111,26 +96,23 @@ async function bdlFetchAll(baseUrl, maxPages = 3) {
   return all
 }
 
-// Recency key for WNBA, whose rows carry a nested game object with a real date.
 function gameSortKey(row) {
   if (row.game && row.game.date) return new Date(row.game.date).getTime()
   if (row.game && row.game.id) return Number(row.game.id) || 0
   return 0
 }
 
-// Pull a usable date string off a WNBA row for the normalized `date` field.
 function rowDate(row) {
   if (row.game && row.game.date) return row.game.date
   return null
 }
 
-// Drop did-not-play rows so a DNP never counts as a miss in a hit-rate.
 function bdlPlayed(row, lg) {
   if (lg === 'WNBA') return (Number(row.min) || 0) > 0
   if (lg === 'MLB') {
     const pa = Number(row.plate_appearances) || 0
     const ab = Number(row.at_bats) || 0
-    const outs = Number(row.pitching_outs) || 0   // innings are recorded as outs
+    const outs = Number(row.pitching_outs) || 0
     const bf = Number(row.batters_faced) || 0
     const pc = Number(row.pitch_count) || 0
     return pa > 0 || ab > 0 || outs > 0 || bf > 0 || pc > 0
@@ -138,12 +120,6 @@ function bdlPlayed(row, lg) {
   return true
 }
 
-// MLB / WNBA: player-centric stats endpoint. MLB needs the date join described
-// above; WNBA carries game.date already.
-// Returns BOTH `games` (last 15, what the card displays) and `gamesFull` (up to
-// 40, what the scoring engine uses for season averages and volatility). The
-// scoring engine needs the longer window: you cannot detect a shaded line
-// without knowing what the player's normal season looks like.
 async function ballGamelog(player, lg, sport) {
   const searchTerm = player.trim().split(' ').slice(-1)[0]
   const pData = await bdlFetch(`https://api.balldontlie.io/${sport.path}/v1/players?search=${encodeURIComponent(searchTerm)}`)
@@ -159,17 +135,14 @@ async function ballGamelog(player, lg, sport) {
   if (sport.needsGameDates) {
     const teamId = match.team && match.team.id
     if (teamId) {
-      // Date map from the team's regular-season games (also strips spring training).
       const gameRows = await bdlFetchAll(`https://api.balldontlie.io/${sport.path}/v1/games?seasons[]=${sport.season}&team_ids[]=${teamId}&season_type=regular&per_page=100`)
       const dateMap = {}
       gameRows.forEach(g => { if (g.id && g.date) dateMap[g.id] = g.date })
-      // The player's full season stat rows, using single-value params that the
-      // API honors reliably (the old game_ids[] list collapsed to one game).
       const statRows = await bdlFetchAll(`https://api.balldontlie.io/${sport.path}/v1/${sport.statsPath}?player_ids[]=${match.id}&seasons[]=${sport.season}&per_page=100`)
       gamesFull = statRows
         .filter(g => bdlPlayed(g, lg))
         .map(g => ({ ...g, date: dateMap[g.game_id] || null }))
-        .filter(g => g.date) // regular season only (spring training game_ids aren't in the map)
+        .filter(g => g.date)
         .sort((a, b) => new Date(b.date) - new Date(a.date))
         .slice(0, 40)
     }
@@ -192,9 +165,6 @@ async function ballGamelog(player, lg, sport) {
   }
 }
 
-// LoL: one call. player_match_map_stats accepts a player_id filter and returns
-// per-map (per-game) rows directly. No date on the row, so we order by row id
-// (auto-increment) as a recency proxy. Each row is one map of one match.
 async function lolGamelog(player, lg) {
   const term = player.trim()
   const pData = await bdlFetch(`https://api.balldontlie.io/lol/v1/players?search=${encodeURIComponent(term)}`)
@@ -227,9 +197,6 @@ async function lolGamelog(player, lg) {
   }
 }
 
-// CS2: no player-centric endpoint. Find the player, get their team, list the
-// team's recent matches, then pull per-match player stats one match at a time.
-// These are match totals (summed across the maps played in that match).
 async function csGamelog(player, lg) {
   const term = player.trim()
   const pData = await bdlFetch(`https://api.balldontlie.io/cs/v1/players?search=${encodeURIComponent(term)}`)
@@ -244,7 +211,7 @@ async function csGamelog(player, lg) {
   const matches = (mData.data || [])
     .filter(m => m.id)
     .sort((a, b) => new Date(b.start_time || 0) - new Date(a.start_time || 0))
-    .slice(0, 10) // bound the per-match fan-out
+    .slice(0, 10)
 
   const games = []
   for (const m of matches) {
@@ -366,8 +333,6 @@ function validateLines(picks, rawLines) {
       const pool = statMatches.length ? statMatches : nameMatches
       const target = parseFloat(p.val)
       if (!isNaN(target) && pool.length > 1) {
-        // pin to the real board line closest to the value the AI returned, so a
-        // shared stat name (or partial-game line) can never show the wrong number
         match = pool.reduce((best, l) =>
           Math.abs(Number(l.line) - target) < Math.abs(Number(best.line) - target) ? l : best)
       } else {
@@ -440,11 +405,9 @@ app.post('/stripe/create-checkout', async (req, res) => {
   }
 })
 
-// Server-side copy of the card's stat mapping (MLB + WNBA only), kept in sync
-// so the grounded confidence equals the hit rate the card draws.
 function bdlStatValueServer(league, g, propLabel) {
   const p = String(propLabel || '').toLowerCase()
-  if (p.includes('fantasy') || /\bfs\b/.test(p)) return null // weighted formula we can't verify; skip, don't fake
+  if (p.includes('fantasy') || /\bfs\b/.test(p)) return null
 
   if (league === 'WNBA') {
     const pts = +g.pts || 0, reb = +g.reb || 0, ast = +g.ast || 0
@@ -506,10 +469,6 @@ function bdlStatValueServer(league, g, propLabel) {
     return null
   }
 
-  // Esports lines are usually "MAPS 1-2 Kills" style: a total across the
-  // first N maps. LoL rows are per-map and CS2 rows are match totals, so both
-  // are normalized to a per-map rate and multiplied by the maps window. This
-  // is approximate by design and labeled as such on the card.
   if (league === 'LOL') {
     const f = ppMapsFactor(p)
     if (p.includes('kill') && !p.includes('participation')) return (+g.kills || 0) * f
@@ -522,7 +481,7 @@ function bdlStatValueServer(league, g, propLabel) {
   if (league === 'CS2') {
     const maps = Math.max(1, +g.maps_played || 1)
     const f = ppMapsFactor(p)
-    if (p.includes('headshot')) return null // data has a percentage, not a count; skip, don't fake
+    if (p.includes('headshot')) return null
     if (p.includes('kill') && !p.includes('first')) return ((+g.kills || 0) / maps) * f
     if (p.includes('death')) return ((+g.deaths || 0) / maps) * f
     if (p.includes('assist')) return ((+g.assists || 0) / maps) * f
@@ -532,13 +491,11 @@ function bdlStatValueServer(league, g, propLabel) {
   return null
 }
 
-// Parse the maps window off a PrizePicks esports label: "MAPS 1-2 Kills" -> 2.
 function ppMapsFactor(p) {
   const m = p.match(/maps?\s*1\s*[-\u2013\u2014]\s*(\d)/)
   return m ? Math.max(1, Number(m[1])) : 1
 }
 
-// Cached gamelog fetch shared by the route and the grounding step.
 async function getGamelog(player, lg) {
   const sport = BDL_SPORTS[lg]
   if (!sport || !sport.supported) return { games: [] }
@@ -553,39 +510,13 @@ async function getGamelog(player, lg) {
   return payload
 }
 
-// ===== SCORING ENGINE v2 — analyze first, rate after =====
-// Raw hit rate is no longer the model. It is one input. Every verifiable prop
-// is scored from three weighted components plus a trap detector:
-//
-//   1) SHRUNK HIT RATE (45%) — the recent hit rate pulled toward 50% based on
-//      sample size. 14 of 15 raw is 93%, but 15 games is a tiny sample, so it
-//      shrinks to ~76%. A streak can no longer masquerade as a lock.
-//   2) PROJECTION EDGE (35%) — blended season + last-10 average vs the line,
-//      normalized by the player's own game-to-game volatility. This is the
-//      question that actually matters: is the LINE beatable, not was it beaten.
-//   3) AVAILABILITY (20%) — their last logged game must be recent. A player
-//      who hasn't appeared in days is an injury/rest risk and cannot gold.
-//
-//   TRAP DETECTOR — an 85%+ streak over the last 15 combined with a line set
-//   well past the player's season average means the book has already priced
-//   the streak in. Constant greens are the eye candy PrizePicks wants bettors
-//   chasing. Those picks get flagged trapRisk, penalized 20 points, and are
-//   never gold-eligible.
-//
-// Tunable knobs, all in one place:
-const SHRINK_PRIOR = 10           // phantom 50/50 games blended into the hit rate
-// PrizePicks builds standard lines to sit near coin flips. A recent hit rate
-// this one-sided on a standard line is the eye candy the book prices in, so
-// the streak ALONE is a trap. A line also shaded past the player's pre-streak
-// baseline is an aggravator that earns a bigger penalty.
-const TRAP_STREAK = 0.80          // recent-15 hit rate that counts as eye candy on its own
-const TRAP_LINE_INFLATION = 1.12  // line 12%+ past the baseline = book adjusted
+const SHRINK_PRIOR = 10
+const TRAP_STREAK = 0.80
+const TRAP_LINE_INFLATION = 1.12
 const W_HITRATE = 0.45
 const W_EDGE = 0.35
 const W_AVAIL = 0.20
 
-// Minimum verifiable games before a prop can be scored. Esports gets a
-// slightly lower bar because series come less frequently than ball games.
 const MIN_GAMES = { MLB: 10, WNBA: 10, LOL: 8, CS2: 8 }
 
 function mean(a) { return a.length ? a.reduce((s, v) => s + v, 0) / a.length : 0 }
@@ -595,8 +526,6 @@ function stdev(a) {
   return Math.sqrt(a.reduce((s, v) => s + (v - m) * (v - m), 0) / (a.length - 1))
 }
 
-// games must be sorted most-recent-first. Returns null when the prop can't be
-// verified from real data (unmapped stat, or fewer than 10 usable games).
 function scoreProp(games, league, statLabel, L) {
   const rows = (games || [])
     .map(g => ({ v: bdlStatValueServer(league, g, statLabel), date: g.date || null }))
@@ -607,23 +536,17 @@ function scoreProp(games, league, statLabel, L) {
   const recent15 = vals.slice(0, 15)
   const recent10 = vals.slice(0, 10)
 
-  const seasonMean = mean(vals)             // up to 40 games of context
+  const seasonMean = mean(vals)
   const recentMean = mean(recent10)
   const proj = 0.6 * seasonMean + 0.4 * recentMean
-  const sd = Math.max(stdev(vals), 0.5)     // floor so tiny-variance stats don't explode the edge
+  const sd = Math.max(stdev(vals), 0.5)
 
-  // Pre-streak baseline for the trap check. The hot streak itself inflates
-  // the season mean, so comparing the line against it would hide exactly the
-  // shading we're hunting. Games OLDER than the last 15 are the player's true
-  // level before the book started chasing the streak. Fewer than 8 older
-  // games: fall back to the season mean (early-season, nothing better exists).
   const older = vals.slice(15)
   const baseline = older.length >= 8 ? mean(older) : seasonMean
 
-  // Availability proxy: last logged game must be recent for this sport's cadence.
   const withDate = rows.find(r => r.date)
   const staleDays = league === 'MLB' ? 4 : (league === 'WNBA' ? 7 : 14)
-  let avail = 0.7 // rows without dates: neither credit nor kill it
+  let avail = 0.7
   if (withDate) {
     const daysSince = (Date.now() - new Date(withDate.date).getTime()) / 86400000
     avail = daysSince <= staleDays ? 1 : 0.4
@@ -638,21 +561,16 @@ function scoreProp(games, league, statLabel, L) {
     const inflated = dir === 'HIGHER'
       ? L >= baseline * TRAP_LINE_INFLATION
       : L <= baseline * (2 - TRAP_LINE_INFLATION)
-    // The streak alone traps. A moderately hot run on a shaded line traps too.
     const streaky = rawRecent >= TRAP_STREAK
     const trap = streaky || (rawRecent >= 0.7 && inflated)
     let score = 100 * (W_HITRATE * shrunk + W_EDGE * (0.5 + edgeScore / 2) + W_AVAIL * avail)
     if (trap) score -= (streaky && inflated) ? 30 : 20
-    if (edgeRaw <= 0) score -= 8 // hit-rate side contradicts the projection
+    if (edgeRaw <= 0) score -= 8
     return { dir, score, rawRecent, hits15, n15: recent15.length, trap, edgeRaw }
   })
 
   sides.sort((a, b) => b.score - a.score)
   const best = sides[0]
-  // The raw composite tops out in the high 70s/80s by construction. The card
-  // and all product copy speak an "80+ = gold" scale, so the score is mapped
-  // onto that axis. Monotonic: ordering, gates, and trap flags are decided on
-  // the raw value, only the displayed number changes scale.
   const scaled = Math.round(best.score * 1.2)
   return {
     dir: best.dir,
@@ -666,17 +584,10 @@ function scoreProp(games, league, statLabel, L) {
     baseline: Math.round(baseline * 10) / 10,
     edge: Math.round(best.edgeRaw * 10) / 10,
     avail,
-    // Gold demands everything: no trap, projection agrees, player active.
-    // avail 0.7 = rows carry no dates (LoL), which is a data limitation,
-    // not an injury signal, so it does not block gold.
     goldEligible: !best.trap && best.edgeRaw > 0 && avail >= 0.7
   }
 }
 
-// The fix for AI direction contradicting the data. For MLB/WNBA picks with a
-// real sample, direction and confidence come from the scoring engine, not the
-// AI's blind guess. Picks with fewer than 10 verifiable games are left alone
-// (the card hides their chart anyway).
 const REAL_GROUND_LEAGUES = ['MLB', 'WNBA', 'LOL', 'CS2']
 async function groundPicks(picks) {
   await Promise.all(picks.map(async p => {
@@ -709,8 +620,6 @@ async function groundPicks(picks) {
   return picks
 }
 
-// Run an async fn over items with bounded concurrency so a big slate doesn't
-// fire 50 gamelog fetches at once.
 async function mapLimit(items, limit, fn) {
   let i = 0
   const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
@@ -722,11 +631,6 @@ async function mapLimit(items, limit, fn) {
   await Promise.all(workers)
 }
 
-// Gold floor per league on the scaled 80+ axis. Raw-score equivalents are
-// unchanged (WNBA 68, MLB/esports 72), so selection is identical to before
-// the rescale — every pick clearing its floor now also reads as GOLD on the
-// card. AI-league picks are model-claimed confidence. This function is the
-// ONLY source of truth, used by the scanner, the AI fallback, and both gates.
 function goldFloorFor(lg) {
   if (lg === 'WNBA') return 82
   if (lg === 'MLB') return 86
@@ -734,7 +638,6 @@ function goldFloorFor(lg) {
   return 82
 }
 
-// Build a frontend-shaped pick straight from the scoring engine's output.
 function buildRealPick(l, lg, s) {
   const name = l.name
   const initials = (name || 'XX').split(' ').map(w => w[0]).join('').substring(0, 2).toUpperCase()
@@ -772,23 +675,17 @@ function buildRealPick(l, lg, s) {
   }
 }
 
-// The real engine for MLB/WNBA. Walk the actual slate, pull ONE gamelog per
-// player, score every verifiable prop through the v2 engine, and return picks
-// at or above floorPct, strongest first. When requireGoldEligible is true
-// (the /gold route), traps, negative-edge picks, and availability question
-// marks are excluded entirely — the Tonight board still shows them with their
-// penalized score and TRAP language so users learn what a shaded line looks like.
 async function realScan(lines, league, floorPct, maxPerPlayer = 2, maxTotal = 20, requireGoldEligible = false) {
   const lg = league.toUpperCase()
   const cands = (lines || []).filter(l =>
     (l.league || '').toUpperCase() === lg && l.name && l.stat && l.line != null &&
     (!l.oddsType || l.oddsType === 'standard') &&
-    !l.name.includes('+'))  // combo props (two players) can't be verified from one game log
+    !l.name.includes('+'))
   if (!cands.length) return []
 
   const byPlayer = {}
   cands.forEach(l => { (byPlayer[l.name] = byPlayer[l.name] || []).push(l) })
-  const names = Object.keys(byPlayer).slice(0, 50) // bound the fetch fan-out
+  const names = Object.keys(byPlayer).slice(0, 50)
 
   const collected = []
   await mapLimit(names, 8, async name => {
@@ -819,10 +716,6 @@ async function realScan(lines, league, floorPct, maxPerPlayer = 2, maxTotal = 20
   return collected.slice(0, maxTotal)
 }
 
-// Log every gold pick to Supabase so the model's real record is tracked over
-// time. Fire-and-forget: a missing table or a network blip never blocks the
-// response. Duplicate calls on the same slate are absorbed by the unique
-// constraint (player, stat, line, dir, game_date).
 async function logGoldPicks(picks) {
   if (!picks || !picks.length) return
   try {
@@ -849,21 +742,6 @@ async function logGoldPicks(picks) {
   }
 }
 
-// ===== GOLD AUTO-ANALYSIS =====
-// After the scoring engine selects gold candidates, a web-search pass checks
-// tonight's reality for EVERY pick on the board, all leagues — MLB, WNBA,
-// NBA, NHL, esports, all of it: opponent, injury/lineup status, anything the
-// game logs can't see. The board is split into chunks of 10 that run in
-// parallel so full coverage doesn't slow the load down. The model NEVER
-// re-rates picks itself. It returns a status per player and the SERVER
-// applies the adjustment:
-//   CONFIRMED — positively found active/starting tonight. Rating stands,
-//               ✓ VERIFIED on the card, pairing-eligible.
-//   NO_NEWS   — nothing negative found (lineup may not be posted yet).
-//               Rating stands, pairing-eligible.
-//   CAUTION   — an actual negative finding. Rating -10, ⚠ CAUTION on the
-//               card, never pairs, and drops off gold if it falls under floor.
-//   OUT       — ruled out or team not playing. Pick removed entirely.
 const ANALYZE_CHUNK = 10
 
 async function analyzeChunk(chunk, currentTime) {
@@ -914,9 +792,6 @@ Respond with ONLY this JSON array as your final message, nothing before or after
 async function analyzeGoldPicks(picks, currentTime) {
   if (!picks.length) return picks
 
-  // Every pick on the board gets the analyst, all leagues. Chunks run in
-  // parallel; a failed chunk leaves its picks UNANALYZED instead of blanking
-  // the board.
   const chunks = []
   for (let i = 0; i < picks.length; i += ANALYZE_CHUNK) chunks.push(picks.slice(i, i + ANALYZE_CHUNK))
   const byName = {}
@@ -949,8 +824,6 @@ async function analyzeGoldPicks(picks, currentTime) {
       p.meta = `${p.meta} · ⚠ CAUTION`
       if (note) p.bear = `Analyst CAUTION: ${note} ${p.bear}`
     } else {
-      // NO_NEWS (or anything unrecognized): nothing negative found. A lineup
-      // not being posted yet is not bad news, so the rating stands untouched.
       p.analysisStatus = 'NO_NEWS'
       if (note) p.bull = `Analyst: ${note} ${p.bull}`
     }
@@ -959,14 +832,6 @@ async function analyzeGoldPicks(picks, currentTime) {
   return out
 }
 
-// ===== PAIRING ENGINE =====
-// The strongest 2-man combos, built from legs with a clean status check:
-// CONFIRMED (positively verified in tonight's lineup) or NO_NEWS (nothing
-// negative found — normal for games whose lineups aren't posted yet).
-// CAUTION legs never pair. Rules: never two legs from the same team (one bad
-// team night kills both), prefer CONFIRMED legs and cross-league independence,
-// rank by the combined rate treating legs as independent. A 2-leg Power Play
-// pays 3x, so the breakeven is ~33% combined.
 function teamOf(p) {
   if (p.team) return String(p.team).toUpperCase()
   const parts = String(p.meta || '').split('·')
@@ -979,14 +844,14 @@ function buildPairs(elig, maxPairs = 5) {
     for (let j = i + 1; j < elig.length; j++) {
       const a = elig[i], b = elig[j]
       const ta = teamOf(a), tb = teamOf(b)
-      if (ta && tb && ta === tb) continue // same team = correlated failure
+      if (ta && tb && ta === tb) continue
       const combined = Math.round((a.conf / 100) * (b.conf / 100) * 100)
       const sameSlot = a.league === b.league && a.time && a.time === b.time
       const confirmedCount = [a, b].filter(p => p.analysisStatus === 'CONFIRMED').length
       const rank = combined
-        + confirmedCount * 3                      // verified legs beat unposted lineups
-        + (a.league !== b.league ? 2 : 0)          // cross-league independence
-        - (sameSlot ? 3 : 0)                       // may share a game window
+        + confirmedCount * 3
+        + (a.league !== b.league ? 2 : 0)
+        - (sameSlot ? 3 : 0)
       pairs.push({
         rank,
         combined,
@@ -1007,9 +872,6 @@ function buildPairs(elig, maxPairs = 5) {
   return pairs.slice(0, maxPairs).map(({ rank, ...p }) => p)
 }
 
-// Which non-real leagues get AI coverage: every league on the live slate
-// with at least 5 lines, deepest slates first, capped at 8 so a busy day
-// can't fan out forever. A requested league always gets covered on its tab.
 function pickAiLeagues(rawLines, reqLeague, REAL) {
   if (reqLeague) return REAL.includes(reqLeague) ? [] : [reqLeague]
   const counts = {}
@@ -1025,12 +887,6 @@ function pickAiLeagues(rawLines, reqLeague, REAL) {
     .map(([lg]) => lg)
 }
 
-// ===== SLIPS ENGINE =====
-// Best 2- through 6-man power play combos. Legs come from analysis-clean
-// picks (CONFIRMED / NO_NEWS); if the analyst couldn't run at all, slips
-// still build from non-trap picks and are labeled unverified rather than
-// vanishing. Never two legs from the same team. Combined rates treat legs
-// as independent, shown against the power play breakeven for that size.
 const POWER_MULT = { 2: 3, 3: 5, 4: 10, 5: 20, 6: 37.5 }
 
 function slipPool(picks) {
@@ -1047,7 +903,6 @@ function buildSlips(picks) {
     analystDown, ...p
   }))
 
-  // 3- through 6-man: greedy from the strongest legs, one per team max.
   const sorted = [...pool].sort((a, b) => b.conf - a.conf)
   for (let k = 3; k <= 6; k++) {
     if (sorted.length < k) break
@@ -1080,15 +935,9 @@ function buildSlips(picks) {
   return slips
 }
 
-// Gold responses are cached per league so the tab opens instantly after the
-// first build. The full pipeline (scan -> analyze -> pair) runs at most once
-// per 30 minutes per league.
 let goldCache = {}
 const GOLD_CACHE_TTL = 30 * 60 * 1000
 
-// Shared Anthropic call with retry. The parallel per-league fan-out can trip
-// rate limits (429) or transient overloads; silent empty returns made those
-// invisible and blanked boards. Errors are logged and retried with backoff.
 async function anthropicCall(body, tries = 3) {
   let data = null
   for (let i = 0; i < tries; i++) {
@@ -1108,8 +957,6 @@ async function anthropicCall(body, tries = 3) {
   return data
 }
 
-// AI pick generation for sports WITHOUT real data. MLB/WNBA are handled by the
-// scanner and excluded here.
 async function aiPicks(currentTime, lines, league, rawLines, mode, pickCount) {
   if (!lines.length) return []
   const linesText = lines.map(l =>
@@ -1180,9 +1027,6 @@ Rules:
   let parsed
   try { parsed = JSON.parse(textBlock.text.slice(start, end + 1)) } catch (e) { return [] }
   const grounded = await groundPicks(validateLines(dedupe(normalizePicks(parsed)), rawLines))
-  // The model emits ids 1..N per call, which collides across the parallel
-  // per-league calls and breaks parlay toggling and React keys. Rebuild every
-  // id from content so picks are globally unique across the whole board.
   grounded.forEach(p => {
     p.id = `ai-${p.league}-${p.name}-${p.stat}-${p.val}`.replace(/\s+/g, '_')
   })
@@ -1201,34 +1045,55 @@ app.post('/picks', async (req, res) => {
     const REAL = ['MLB', 'WNBA', 'LOL', 'CS2']
     let picks = []
 
-    // Real-data scanner for every BDL-backed league, run in parallel (lower
-    // floor than gold so the board has range — traps show up here with their
-    // penalized score and TRAP language). Any league whose real scan comes
-    // back empty (sparse slate, or stat logs not on the current BDL tier)
-    // falls through to AI so its board is never blank.
-    const scanLgs = reqLeague ? (REAL.includes(reqLeague) ? [reqLeague] : []) : REAL
-    const scanResults = await Promise.all(scanLgs.map(async lg => {
-      const scanned = await realScan(rawLines, lg, 72, 2, 15, false)
-      if (scanned.length > 0) return scanned
-      const lgLines = rawLines.filter(l => (l.league || '').toUpperCase() === lg)
-      if (!lgLines.length) return []
-      const lgAI = await aiPicks(currentTime, lgLines, lg, rawLines, 'tonight', pickCount)
-      console.log(lg, 'real scanner empty — AI fallback, got', lgAI.length, 'picks')
-      return lgAI
-    }))
-    scanResults.forEach(arr => { picks = picks.concat(arr) })
-
-    // AI per league for EVERY other sport with live lines (soccer, tennis,
-    // golf, MMA, whatever the slate has), run in parallel. Leagues need at
-    // least 5 lines to qualify, capped at the 8 deepest slates.
-    const aiLeagues = pickAiLeagues(rawLines, reqLeague, REAL)
-    const aiResults = []
-    await mapLimit(aiLeagues, 3, async lg => {
-      const lgLines = rawLines.filter(l => (l.league || '').toUpperCase() === lg).slice(0, 60)
-      const arr = await aiPicks(currentTime, lgLines, lg, rawLines, 'tonight', Math.min(pickCount, 4))
-      aiResults.push(...arr)
+    // Log exactly what's on the board per league so a future "only X shows"
+    // report can be diagnosed from Railway logs instead of guessing.
+    const lineCounts = {}
+    ;(rawLines || []).forEach(l => {
+      const lg = (l.league || 'OTHER').toUpperCase()
+      lineCounts[lg] = (lineCounts[lg] || 0) + 1
     })
-    picks = picks.concat(aiResults)
+    console.log('Lines per league:', JSON.stringify(lineCounts))
+
+    const scanLgs = reqLeague ? (REAL.includes(reqLeague) ? [reqLeague] : []) : REAL
+    const aiLeagues = pickAiLeagues(rawLines, reqLeague, REAL)
+
+    // Real-data scan runs first, no Anthropic call needed. Then EVERY AI
+    // call this request needs, fallback or niche-league, runs through ONE
+    // shared concurrency limit. The old code ran up to 4 fallback calls and
+    // 3 niche-league calls in two SEPARATE parallel batches at once, up to 7
+    // simultaneous Anthropic requests on a single page load, enough to trip
+    // rate limits and silently blank out every AI-dependent league together.
+    const outcomes = {}
+    await Promise.all(scanLgs.map(async lg => {
+      const scanned = await realScan(rawLines, lg, 72, 2, 15, false)
+      outcomes[lg] = { scanned }
+      console.log(lg, 'real scan:', scanned.length, 'picks from', lineCounts[lg] || 0, 'lines')
+    }))
+
+    const aiTasks = []
+    scanLgs.forEach(lg => {
+      if (outcomes[lg].scanned.length === 0 && (lineCounts[lg] || 0) > 0) {
+        aiTasks.push({ lg, lines: rawLines.filter(l => (l.league || '').toUpperCase() === lg), count: pickCount, fallback: true })
+      }
+    })
+    aiLeagues.forEach(lg => {
+      aiTasks.push({ lg, lines: rawLines.filter(l => (l.league || '').toUpperCase() === lg).slice(0, 60), count: Math.min(pickCount, 4), fallback: false })
+    })
+
+    await mapLimit(aiTasks, 3, async task => {
+      const arr = await aiPicks(currentTime, task.lines, task.lg, rawLines, 'tonight', task.count)
+      console.log(task.lg, task.fallback ? '(AI fallback)' : '(AI league)', 'got', arr.length, 'picks')
+      outcomes[task.lg] = outcomes[task.lg] || {}
+      outcomes[task.lg].ai = arr
+    })
+
+    scanLgs.forEach(lg => {
+      const o = outcomes[lg]
+      picks = picks.concat(o.scanned.length > 0 ? o.scanned : (o.ai || []))
+    })
+    aiLeagues.forEach(lg => {
+      picks = picks.concat((outcomes[lg] && outcomes[lg].ai) || [])
+    })
 
     picks.sort((a, b) => b.conf - a.conf)
     picks = picks.slice(0, 40)
@@ -1244,7 +1109,6 @@ app.post('/gold', async (req, res) => {
   try {
     const { currentTime, lines: rawLines, league } = req.body
 
-    // Serve from cache when the full pipeline ran recently for this league.
     const goldKey = (league || 'ALL').toUpperCase()
     const gc = goldCache[goldKey]
     if (gc && Date.now() - gc.ts < GOLD_CACHE_TTL) {
@@ -1260,61 +1124,66 @@ app.post('/gold', async (req, res) => {
     const REAL = ['MLB', 'WNBA', 'LOL', 'CS2']
     let picks = []
 
-    // Gold from real data: strongest verified plays, gold-eligible only. That
-    // means no trap flags, projection must agree with the streak side, and the
-    // player must have appeared recently. All real leagues scan in parallel.
-    // Any league whose real scan is empty (sparse slate, or stat logs not on
-    // the current BDL tier) falls back to AI, still gated by its gold floor.
-    // Grounding rescores any verifiable AI pick through the same engine.
+    const lineCounts = {}
+    ;(rawLines || []).forEach(l => {
+      const lg = (l.league || 'OTHER').toUpperCase()
+      lineCounts[lg] = (lineCounts[lg] || 0) + 1
+    })
+    console.log('Lines per league:', JSON.stringify(lineCounts))
+
     const scanLgs = reqLeague ? (REAL.includes(reqLeague) ? [reqLeague] : []) : REAL
-    const scanResults = await Promise.all(scanLgs.map(async lg => {
+    const aiLeagues = pickAiLeagues(rawLines, reqLeague, REAL)
+
+    // Same fix as /picks: real scan first (no AI), then every Anthropic call
+    // this request needs runs through ONE shared concurrency limit instead
+    // of two separate parallel batches that could fire 7 calls at once.
+    const outcomes = {}
+    await Promise.all(scanLgs.map(async lg => {
       const floor = goldFloorFor(lg)
       const scanned = await realScan(rawLines, lg, floor, 2, 20, true)
-      if (scanned.length > 0) return scanned
-      const lgLines = rawLines.filter(l => (l.league || '').toUpperCase() === lg)
-      if (!lgLines.length) return []
-      const lgAI = await aiPicks(currentTime, lgLines, lg, rawLines, 'gold')
-      console.log(lg, 'real scanner empty — AI gold fallback, got', lgAI.length, 'picks')
-      return lgAI.filter(p => p.conf >= floor)
+      outcomes[lg] = { scanned, floor }
+      console.log(lg, 'real scan (gold):', scanned.length, 'picks from', lineCounts[lg] || 0, 'lines')
     }))
-    scanResults.forEach(arr => { picks = picks.concat(arr) })
 
-    // AI gold per league for EVERY other sport with live lines, in parallel,
-    // each gated by its gold floor. Every sport on the slate gets scanned.
-    const aiLeagues = pickAiLeagues(rawLines, reqLeague, REAL)
-    const aiResults = []
-    await mapLimit(aiLeagues, 3, async lg => {
-      const lgLines = rawLines.filter(l => (l.league || '').toUpperCase() === lg).slice(0, 60)
-      const aiGold = await aiPicks(currentTime, lgLines, lg, rawLines, 'gold')
-      aiResults.push(...aiGold.filter(p => p.conf >= goldFloorFor(lg)))
+    const aiTasks = []
+    scanLgs.forEach(lg => {
+      if (outcomes[lg].scanned.length === 0 && (lineCounts[lg] || 0) > 0) {
+        aiTasks.push({ lg, lines: rawLines.filter(l => (l.league || '').toUpperCase() === lg), fallback: true, floor: outcomes[lg].floor })
+      }
     })
-    picks = picks.concat(aiResults)
+    aiLeagues.forEach(lg => {
+      aiTasks.push({ lg, lines: rawLines.filter(l => (l.league || '').toUpperCase() === lg).slice(0, 60), fallback: false, floor: goldFloorFor(lg) })
+    })
 
-    // Snapshot before the gates so a thin slate can still show its best
-    // candidates instead of a blank board.
+    await mapLimit(aiTasks, 3, async task => {
+      const arr = await aiPicks(currentTime, task.lines, task.lg, rawLines, 'gold')
+      const kept = arr.filter(p => p.conf >= task.floor)
+      console.log(task.lg, task.fallback ? '(AI gold fallback)' : '(AI gold league)', 'got', kept.length, 'of', arr.length, 'clearing floor', task.floor)
+      outcomes[task.lg] = outcomes[task.lg] || {}
+      outcomes[task.lg].ai = kept
+    })
+
+    scanLgs.forEach(lg => {
+      const o = outcomes[lg]
+      picks = picks.concat(o.scanned.length > 0 ? o.scanned : (o.ai || []))
+    })
+    aiLeagues.forEach(lg => {
+      picks = picks.concat((outcomes[lg] && outcomes[lg].ai) || [])
+    })
+
     const candidates = [...picks]
 
-    // Final gate: every pick must clear its floor AND carry no trap flag,
-    // regardless of how it got here.
     picks = picks.filter(p => p.conf >= goldFloorFor((p.league || '').toUpperCase()) && !p.trapRisk)
 
     picks.sort((a, b) => b.conf - a.conf)
     picks = picks.slice(0, 30)
     console.log('Got', picks.length, 'gold picks (', picks.filter(p => REAL.includes(p.league)).length, 'real ) — analyzing tonight\'s status')
 
-    // Stage 2: auto-verify tonight's reality (opponent, injuries, lineups) for
-    // the top picks, then re-rate. OUT picks are removed, real negative
-    // findings dock 10, clean checks (CONFIRMED / NO_NEWS) keep their rating.
     picks = await analyzeGoldPicks(picks, currentTime)
 
-    // The floor is re-enforced AFTER re-rating: a pick docked for bad news
-    // that falls under its league floor does not belong on the gold board.
     picks = picks.filter(p => p.conf >= goldFloorFor((p.league || '').toUpperCase()))
     picks.sort((a, b) => b.conf - a.conf)
 
-    // Never-empty valve: if nothing cleared every gate but real candidates
-    // exist (All-Star breaks and thin slates happen), surface the best
-    // non-trap ones honestly labeled NEAR GOLD instead of a blank board.
     if (picks.length === 0 && candidates.length > 0) {
       picks = candidates
         .filter(p => !p.trapRisk)
@@ -1324,17 +1193,11 @@ app.post('/gold', async (req, res) => {
       console.log('Never-empty valve engaged:', picks.length, 'NEAR GOLD picks from', candidates.length, 'candidates')
     }
 
-    // Every pick that reaches this board IS gold by definition (it cleared
-    // its league floor, the trap filter, and the status check). Ship the
-    // tier explicitly so the card labels it GOLD instead of inferring a
-    // tier from conf thresholds built for the old 0-95 AI scale.
     picks.forEach(p => { p.tier = p.nearGold ? 'NEAR GOLD' : 'GOLD' })
 
-    // Stage 3: strongest slips, 2-man through 6-man.
     const slips = buildSlips(picks)
     const pairs = slips.filter(s => s.size === 2)
 
-    // Make analyst failures visible instead of silent.
     const warnings = []
     const analyzedAny = picks.some(p => ['CONFIRMED', 'NO_NEWS', 'CAUTION'].includes(p.analysisStatus))
     if (picks.length > 0 && !analyzedAny) {
@@ -1349,13 +1212,9 @@ app.post('/gold', async (req, res) => {
       '| near-gold:', picks.filter(p => p.nearGold).length,
       '| slips:', slips.length, analyzedAny ? '' : '| ANALYST DID NOT RUN')
 
-    // Track the record: every gold pick that reaches the board gets logged
-    // with its FINAL (post-analysis) rating.
     logGoldPicks(picks)
 
     const payload = { picks, pairs, slips, warnings }
-    // Empty or analyst-less boards are never cached: transient API failures
-    // should retry on the next load, not lock in for 30 minutes.
     if (picks.length > 0 && analyzedAny) goldCache[goldKey] = { data: payload, ts: Date.now() }
     res.json(payload)
   } catch (e) {
@@ -1405,13 +1264,6 @@ app.post('/chat', async (req, res) => {
   }
 })
 
-// Analyze a multi-leg parlay. The combined hit rate is computed HERE from the
-// real numbers already on each pick, never invented by the model. Claude's
-// job is web search: today's matchup and current status for each player,
-// stated only when it's actually found, never guessed from stale training
-// knowledge. web_search_20250305 is a server-executed tool, Anthropic runs
-// the search and hands back real results in the same response; it does not
-// pause for the client to fulfill a tool call the way custom tools do.
 app.post('/parlay-analysis', async (req, res) => {
   try {
     const { picks, currentTime } = req.body
