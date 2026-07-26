@@ -1656,4 +1656,198 @@ After researching all ${picks.length} legs, respond with ONLY this JSON object a
 })
 
 const PORT = process.env.PORT || 8080
+// ===== MONEYLINES =====
+// Real moneyline odds from multiple real sportsbooks (DraftKings, FanDuel,
+// Caesars, BetMGM, and more) via BALLDONTLIE's odds API. Not scraped, not
+// estimated, this is a live authorized feed the same subscription already
+// covers. For each game, the BEST available price on each side across every
+// book is used, and implied win probability is computed directly from that
+// real number, never a model guess standing in for what the market already
+// prices. MLB games key the opponent under away_team, WNBA under
+// visitor_team, confirmed against BALLDONTLIE's schema earlier in this build,
+// same trap as the matchup work before this.
+const MONEYLINE_SPORTS = ['MLB', 'WNBA']
+const AWAY_FIELD = { MLB: 'away_team', WNBA: 'visitor_team' }
+
+function americanToImpliedProb(odds) {
+  if (odds == null) return null
+  return odds > 0 ? 100 / (odds + 100) : Math.abs(odds) / (Math.abs(odds) + 100)
+}
+
+// Best price for the bettor is the highest number regardless of sign:
+// +650 beats +600, and -105 beats -110.
+function bestOdds(oddsList, key) {
+  const valid = oddsList.filter(o => o[key] != null)
+  if (!valid.length) return null
+  const best = valid.reduce((a, b) => (a[key] > b[key] ? a : b))
+  return { odds: best[key], vendor: best.vendor }
+}
+
+async function fetchMoneylines(lg) {
+  const sport = BDL_SPORTS[lg]
+  if (!sport) return []
+  const awayField = AWAY_FIELD[lg] || 'away_team'
+  const today = new Date().toISOString().slice(0, 10)
+  const tomorrow = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
+
+  const [gamesToday, gamesTomorrow, oddsToday, oddsTomorrow] = await Promise.all([
+    bdlFetch(`https://api.balldontlie.io/${sport.path}/v1/games?dates[]=${today}`),
+    bdlFetch(`https://api.balldontlie.io/${sport.path}/v1/games?dates[]=${tomorrow}`),
+    bdlFetch(`https://api.balldontlie.io/${sport.path}/v2/odds?dates[]=${today}`),
+    bdlFetch(`https://api.balldontlie.io/${sport.path}/v2/odds?dates[]=${tomorrow}`)
+  ])
+
+  const games = {}
+  ;[...(gamesToday.data || []), ...(gamesTomorrow.data || [])].forEach(g => { games[g.id] = g })
+
+  const byGame = {}
+  ;[...(oddsToday.data || []), ...(oddsTomorrow.data || [])].forEach(o => {
+    (byGame[o.game_id] = byGame[o.game_id] || []).push(o)
+  })
+
+  const results = []
+  for (const [gameId, oddsList] of Object.entries(byGame)) {
+    const game = games[gameId]
+    if (!game) continue
+
+    const home = bestOdds(oddsList, 'moneyline_home_odds')
+    const away = bestOdds(oddsList, 'moneyline_away_odds')
+    if (!home || !away) continue
+
+    const homeProb = americanToImpliedProb(home.odds)
+    const awayProb = americanToImpliedProb(away.odds)
+    const awayTeam = game[awayField] || {}
+    const homeTeam = game.home_team || {}
+
+    results.push({
+      id: `ml-${lg}-${gameId}`,
+      league: lg,
+      gameId,
+      date: game.date || null,
+      homeTeam: homeTeam.full_name || homeTeam.name || 'Home',
+      homeAbbr: homeTeam.abbreviation || null,
+      awayTeam: awayTeam.full_name || awayTeam.name || 'Away',
+      awayAbbr: awayTeam.abbreviation || null,
+      homeOdds: home.odds,
+      homeVendor: home.vendor,
+      homeImpliedPct: homeProb != null ? Math.round(homeProb * 1000) / 10 : null,
+      awayOdds: away.odds,
+      awayVendor: away.vendor,
+      awayImpliedPct: awayProb != null ? Math.round(awayProb * 1000) / 10 : null,
+      favorite: home.odds < away.odds ? 'home' : 'away'
+    })
+  }
+  return results
+}
+
+// The real odds above are never touched again past this point. This step
+// only adds search-grounded CONTEXT on top: starting pitchers, injuries,
+// recent form, anything that explains or challenges why the market favors
+// the side it does. Same rule as the rest of this app: the model never
+// re-rates or restates a number that real data already provides.
+const ML_ANALYZE_CHUNK = 8
+
+async function analyzeMoneylineChunk(chunk, currentTime) {
+  const list = chunk.map(g => {
+    const favTeam = g.favorite === 'home' ? g.homeTeam : g.awayTeam
+    const favOdds = g.favorite === 'home' ? g.homeOdds : g.awayOdds
+    const favPct = g.favorite === 'home' ? g.homeImpliedPct : g.awayImpliedPct
+    return `- id: "${g.id}" | ${g.awayTeam} @ ${g.homeTeam} (${g.league}) | Market favors ${favTeam} at ${favOdds > 0 ? '+' : ''}${favOdds} (${favPct}% implied)`
+  }).join('\n')
+
+  const userMsg = `Current time: ${currentTime || new Date().toISOString()} ET
+
+These are upcoming games with REAL live moneyline odds already pulled from the market. The odds and implied probabilities listed are already correct, real numbers, not your job to guess, restate, or re-price them.
+
+${list}
+
+For EACH game, search for what actually matters to the outcome: starting pitchers (for MLB), key injuries or absences, and recent team form (last 5-10 games). Write 1-2 sentences of real reasoning grounded in what you actually find. If you can't confirm something (like today's starting pitcher), say so plainly rather than guessing. Do not state your own "pick" or a different probability, your job is to explain the real matchup, not re-price it. If you find something that genuinely challenges the favorite (an injury to a key player, a bullpen game instead of the usual starter), flag it plainly in riskFlag.
+
+Respond with ONLY this JSON array as your final message, nothing before or after it, no markdown fences:
+[{"id":"exact id from the list above","note":"1-2 sentences of real reasoning grounded in search","riskFlag":"short phrase only if something material challenges the favorite, otherwise omit this field"}]`
+
+  let messages = [{ role: 'user', content: userMsg }]
+  let finalText = ''
+  for (let i = 0; i < 6; i++) {
+    const data = await anthropicCall({
+      model: 'claude-sonnet-4-6',
+      max_tokens: 3000,
+      tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 12 }],
+      system: `You analyze real sports betting moneylines. Use web search for every game on the list. Never state odds or probabilities yourself, those are already provided and correct. Never state injury or lineup information you did not actually find via search. Output ONLY the requested JSON array as your final answer, nothing else.`,
+      messages
+    })
+    if (!data || !data.content) throw new Error((data && data.error && data.error.message) || 'No content')
+    finalText += data.content.filter(b => b.type === 'text').map(b => b.text).join('\n')
+    if (data.stop_reason === 'pause_turn') {
+      messages = [...messages, { role: 'assistant', content: data.content }]
+      continue
+    }
+    break
+  }
+
+  const start = finalText.indexOf('[')
+  const end = finalText.lastIndexOf(']')
+  if (start === -1 || end === -1) return []
+  try { return JSON.parse(finalText.slice(start, end + 1)) } catch (e) { return [] }
+}
+
+async function analyzeMoneylines(games, currentTime) {
+  if (!games.length) return games
+  const chunks = []
+  for (let i = 0; i < games.length; i += ML_ANALYZE_CHUNK) chunks.push(games.slice(i, i + ML_ANALYZE_CHUNK))
+  const byId = {}
+  await mapLimit(chunks, 2, async chunk => {
+    try {
+      const results = await analyzeMoneylineChunk(chunk, currentTime)
+      results.forEach(r => { if (r && r.id) byId[r.id] = r })
+    } catch (e) {
+      console.error('Moneyline analysis chunk skipped:', e.message)
+    }
+  })
+  return games.map(g => {
+    const r = byId[g.id]
+    if (!r) return { ...g, analysisNote: null, riskFlag: null, analyzed: false }
+    return { ...g, analysisNote: r.note || null, riskFlag: r.riskFlag || null, analyzed: true }
+  })
+}
+
+// Analysis is real web search across every game on the board, expensive and
+// slow to redo on every page load, so it's cached same as gold picks are.
+let moneylinesCache = {}
+const MONEYLINES_CACHE_TTL = 20 * 60 * 1000
+
+app.post('/moneylines', async (req, res) => {
+  try {
+    const { league, currentTime } = req.body || {}
+    const reqLeague = league ? league.toUpperCase() : null
+    const cacheKey = reqLeague || 'ALL'
+    const mc = moneylinesCache[cacheKey]
+    if (mc && Date.now() - mc.ts < MONEYLINES_CACHE_TTL) {
+      console.log('Serving moneylines from cache for', cacheKey)
+      return res.json(mc.data)
+    }
+
+    const sports = reqLeague ? (MONEYLINE_SPORTS.includes(reqLeague) ? [reqLeague] : []) : MONEYLINE_SPORTS
+
+    const results = await Promise.all(sports.map(lg =>
+      fetchMoneylines(lg).catch(e => {
+        console.error(`Moneylines fetch failed for ${lg}:`, e.message)
+        return []
+      })
+    ))
+
+    let games = results.flat().sort((a, b) => new Date(a.date || 0) - new Date(b.date || 0))
+    console.log('Moneylines:', games.length, 'real games across', sports.join(', '), '— running analyst')
+
+    games = await analyzeMoneylines(games, currentTime || new Date().toISOString())
+
+    const payload = { games }
+    if (games.length > 0) moneylinesCache[cacheKey] = { data: payload, ts: Date.now() }
+    res.json(payload)
+  } catch (e) {
+    console.error('Moneylines error:', e.message)
+    res.status(500).json({ error: e.message })
+  }
+})
+
 app.listen(PORT, () => console.log(`Trip Predicts server running on port ${PORT}`))
