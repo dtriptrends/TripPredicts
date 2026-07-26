@@ -443,6 +443,50 @@ async function tryScraperApi(directUrl) {
   }
 }
 
+// Last resort: ScraperAPI's Async job API, actual residential proxies plus
+// real JS rendering plus ultra-premium anti-bot handling combined, more time
+// and resources than the instant sync call gets. Submit a job, poll its
+// statusUrl until finished, then read the result out of response.body.
+async function tryScraperApiAsync(directUrl) {
+  const submitRes = await fetch('https://async.scraperapi.com/jobs', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      apiKey: process.env.SCRAPER_API_KEY,
+      url: directUrl,
+      premium: true,
+      ultra_premium: true,
+      render: true
+    })
+  })
+  if (!submitRes.ok) throw new Error(`ScraperAPI async job submission failed: ${submitRes.status}`)
+  let job = await submitRes.json()
+  if (!job.statusUrl) throw new Error('ScraperAPI async job did not return a statusUrl')
+
+  const maxWaitMs = 50000
+  const pollIntervalMs = 3000
+  const startedAt = Date.now()
+  while (job.status !== 'finished' && job.status !== 'failed') {
+    if (Date.now() - startedAt > maxWaitMs) throw new Error('ScraperAPI async job timed out waiting for completion')
+    await sleep(pollIntervalMs)
+    const pollRes = await fetch(job.statusUrl)
+    if (!pollRes.ok) throw new Error(`ScraperAPI async status check failed: ${pollRes.status}`)
+    job = await pollRes.json()
+  }
+  if (job.status === 'failed') throw new Error('ScraperAPI async job failed')
+  const body = job.response && job.response.body
+  if (!body) throw new Error('ScraperAPI async job finished with no response body')
+  const statusCode = job.response && job.response.statusCode
+  if (statusCode && statusCode >= 400) {
+    throw new Error(`ScraperAPI async job returned ${statusCode} from target: ${String(body).slice(0, 200)}`)
+  }
+  try {
+    return JSON.parse(body)
+  } catch (e) {
+    throw new Error(`ScraperAPI async result was not JSON: ${String(body).slice(0, 200)}`)
+  }
+}
+
 app.get('/prizepicks/all', async (req, res) => {
   try {
     const now = Date.now()
@@ -452,16 +496,22 @@ app.get('/prizepicks/all', async (req, res) => {
     }
     const directUrl = `https://api.prizepicks.com/projections?per_page=250&single_stat=true`
 
-    // A direct browser request to this same URL comes back fine, PrizePicks
-    // itself is healthy. What was failing was specifically ScraperAPI's
-    // proxy traffic getting rejected (502/504 in ScraperAPI's own logs), not
-    // PrizePicks and not us. So try a plain direct fetch first, real browser
-    // headers so it doesn't look like a bare script, and only pay for and
-    // fall back to ScraperAPI if that ever stops working.
+    // Three attempts, cheapest and fastest first. A direct browser request to
+    // this same URL works fine, PrizePicks itself is healthy, so try that
+    // first for free. The sync ScraperAPI call has been failing consistently
+    // (502/504), kept as a quick middle attempt in case that changes. The
+    // async job (real residential IP + actual JS rendering + ultra-premium
+    // combined) gets more time and resources than either of the above and is
+    // the one ScraperAPI support recommended for a target this well-defended.
     let data = await tryDirectFetch(directUrl)
     if (!data) {
-      console.log('Direct fetch failed, falling back to ScraperAPI')
-      data = await tryScraperApi(directUrl)
+      console.log('Direct fetch failed, trying ScraperAPI sync')
+      try {
+        data = await tryScraperApi(directUrl)
+      } catch (e) {
+        console.log('ScraperAPI sync failed:', e.message, '— trying ScraperAPI async')
+        data = await tryScraperApiAsync(directUrl)
+      }
     }
 
     ppCache = { data, ts: now }
