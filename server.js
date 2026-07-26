@@ -388,6 +388,61 @@ function validateLines(picks, rawLines) {
   })
 }
 
+// A plain server-side fetch with no headers looks nothing like a browser,
+// which is often enough by itself to get flagged. These headers mimic a real
+// browser hitting PrizePicks' own app, no proxy needed if this works.
+async function tryDirectFetch(url) {
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), 15000)
+  try {
+    const response = await fetch(url, {
+      signal: controller.signal,
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
+        'Accept': 'application/json, text/plain, */*',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Referer': 'https://app.prizepicks.com/',
+        'Origin': 'https://app.prizepicks.com'
+      }
+    })
+    if (!response.ok) { console.log('Direct fetch got status', response.status); return null }
+    const raw = await response.text()
+    try {
+      return JSON.parse(raw)
+    } catch (e) {
+      console.log('Direct fetch returned non-JSON:', raw.slice(0, 150))
+      return null
+    }
+  } catch (e) {
+    console.log('Direct fetch error:', e.message)
+    return null
+  } finally {
+    clearTimeout(timeout)
+  }
+}
+
+// Paid fallback. 45s timeout since ultra_premium mode legitimately needs more
+// than 20s sometimes, so it fails fast and falls back to cache instead of
+// hanging indefinitely.
+async function tryScraperApi(directUrl) {
+  const target = encodeURIComponent(directUrl)
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), 45000)
+  let response
+  try {
+    response = await fetch(`https://api.scraperapi.com?api_key=${process.env.SCRAPER_API_KEY}&url=${target}&ultra_premium=true`, { signal: controller.signal })
+  } finally {
+    clearTimeout(timeout)
+  }
+  if (!response.ok) throw new Error(`ScraperAPI returned ${response.status}`)
+  const raw = await response.text()
+  try {
+    return JSON.parse(raw)
+  } catch (e) {
+    throw new Error(`ScraperAPI did not return JSON: ${raw.slice(0, 200)}`)
+  }
+}
+
 app.get('/prizepicks/all', async (req, res) => {
   try {
     const now = Date.now()
@@ -395,29 +450,20 @@ app.get('/prizepicks/all', async (req, res) => {
       console.log('Serving PrizePicks from cache')
       return res.json(ppCache.data)
     }
-    const target = encodeURIComponent(`https://api.prizepicks.com/projections?per_page=250&single_stat=true`)
-    // A hanging ScraperAPI call used to block this request indefinitely with
-    // no feedback. 45s timeout (ultra_premium mode legitimately needs more
-    // than 20s sometimes) so it fails fast and falls back to cache instead.
-    const controller = new AbortController()
-    const timeout = setTimeout(() => controller.abort(), 45000)
-    let response
-    try {
-      response = await fetch(`https://api.scraperapi.com?api_key=${process.env.SCRAPER_API_KEY}&url=${target}&ultra_premium=true`, { signal: controller.signal })
-    } finally {
-      clearTimeout(timeout)
+    const directUrl = `https://api.prizepicks.com/projections?per_page=250&single_stat=true`
+
+    // A direct browser request to this same URL comes back fine, PrizePicks
+    // itself is healthy. What was failing was specifically ScraperAPI's
+    // proxy traffic getting rejected (502/504 in ScraperAPI's own logs), not
+    // PrizePicks and not us. So try a plain direct fetch first, real browser
+    // headers so it doesn't look like a bare script, and only pay for and
+    // fall back to ScraperAPI if that ever stops working.
+    let data = await tryDirectFetch(directUrl)
+    if (!data) {
+      console.log('Direct fetch failed, falling back to ScraperAPI')
+      data = await tryScraperApi(directUrl)
     }
-    if (!response.ok) throw new Error(`ScraperAPI returned ${response.status}`)
-    const raw = await response.text()
-    let data
-    try {
-      data = JSON.parse(raw)
-    } catch (e) {
-      // ScraperAPI/PrizePicks sent back plain text (an error page, a rate
-      // limit notice, etc.) instead of JSON. Surface exactly what it said
-      // instead of a generic "Unexpected token" parse error.
-      throw new Error(`ScraperAPI did not return JSON: ${raw.slice(0, 200)}`)
-    }
+
     ppCache = { data, ts: now }
     res.json(data)
   } catch (e) {
