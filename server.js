@@ -1829,15 +1829,28 @@ app.post('/moneylines', async (req, res) => {
 
     const sports = reqLeague ? (MONEYLINE_SPORTS.includes(reqLeague) ? [reqLeague] : []) : MONEYLINE_SPORTS
 
+    const fetchErrors = []
     const results = await Promise.all(sports.map(lg =>
       fetchMoneylines(lg).catch(e => {
         console.error(`Moneylines fetch failed for ${lg}:`, e.message)
+        fetchErrors.push(`${lg}: ${e.message}`)
         return []
       })
     ))
 
     let games = results.flat().sort((a, b) => new Date(a.date || 0) - new Date(b.date || 0))
     console.log('Moneylines:', games.length, 'real games across', sports.join(', '), '— running analyst')
+
+    // Every league failed and nothing came back. Say so plainly instead of a
+    // quiet empty list, an auth error on BALLDONTLIE looks identical to "no
+    // games today" otherwise, and those need very different next steps.
+    if (games.length === 0 && fetchErrors.length > 0 && fetchErrors.length === sports.length) {
+      console.error('Moneylines: all leagues failed —', fetchErrors.join(' | '))
+      return res.status(502).json({
+        error: `Could not fetch odds from BALLDONTLIE: ${fetchErrors.join(' | ')}`,
+        games: []
+      })
+    }
 
     games = await analyzeMoneylines(games, currentTime || new Date().toISOString())
 
