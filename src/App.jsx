@@ -5,6 +5,7 @@ import Splash from './Splash'
 import Navbar from './Navbar'
 import Tonight from './Tonight'
 import Gold from './Gold'
+import Moneylines from './Moneylines'
 import Chat from './Chat'
 import About from './About'
 
@@ -58,6 +59,7 @@ export default function App() {
         <div style={{ flex: 1, overflow: 'hidden', position: 'relative' }}>
           <div style={{ display: tab === 'tonight' ? 'flex' : 'none', position: 'absolute', inset: 0 }}><Tonight /></div>
           <div style={{ display: tab === 'gold' ? 'flex' : 'none', position: 'absolute', inset: 0 }}><Gold /></div>
+          <div style={{ display: tab === 'moneylines' ? 'flex' : 'none', position: 'absolute', inset: 0 }}><Moneylines /></div>
           <div style={{ display: tab === 'chat' ? 'flex' : 'none', position: 'absolute', inset: 0 }}><Chat /></div>
         </div>
         <footer style={{ padding: '8px 24px', textAlign: 'center', fontSize: '11px', color: 'var(--text3)', letterSpacing: '1.5px', textTransform: 'uppercase', borderTop: '1px solid var(--border)', background: 'transparent', flexShrink: 0, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
