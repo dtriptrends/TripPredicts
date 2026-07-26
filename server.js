@@ -443,11 +443,16 @@ async function tryScraperApi(directUrl) {
   }
 }
 
-// Last resort: ScraperAPI's Async job API, actual residential proxies plus
-// real JS rendering plus ultra-premium anti-bot handling combined, more time
-// and resources than the instant sync call gets. Submit a job, poll its
-// statusUrl until finished, then read the result out of response.body.
-async function tryScraperApiAsync(directUrl) {
+
+// A submitted async job that hasn't resolved yet. ScraperAPI's async jobs
+// keep retrying in the background for up to 24 hours, they are not meant to
+// finish inside a short polling window. So the server submits a job AT MOST
+// once, then checks on it (a single, instant status check, never a blocking
+// poll loop) on whatever request happens to come in next, for as long as it
+// takes. This survives across requests since it's just a module-level var.
+let pendingAsyncJob = null // { statusUrl, submittedAt }
+
+async function submitScraperApiAsyncJob(directUrl) {
   const submitRes = await fetch('https://async.scraperapi.com/jobs', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -460,30 +465,48 @@ async function tryScraperApiAsync(directUrl) {
     })
   })
   if (!submitRes.ok) throw new Error(`ScraperAPI async job submission failed: ${submitRes.status}`)
-  let job = await submitRes.json()
+  const job = await submitRes.json()
   if (!job.statusUrl) throw new Error('ScraperAPI async job did not return a statusUrl')
+  return job
+}
 
-  const maxWaitMs = 50000
-  const pollIntervalMs = 3000
-  const startedAt = Date.now()
-  while (job.status !== 'finished' && job.status !== 'failed') {
-    if (Date.now() - startedAt > maxWaitMs) throw new Error('ScraperAPI async job timed out waiting for completion')
-    await sleep(pollIntervalMs)
-    const pollRes = await fetch(job.statusUrl)
-    if (!pollRes.ok) throw new Error(`ScraperAPI async status check failed: ${pollRes.status}`)
-    job = await pollRes.json()
-  }
-  if (job.status === 'failed') throw new Error('ScraperAPI async job failed')
-  const body = job.response && job.response.body
-  if (!body) throw new Error('ScraperAPI async job finished with no response body')
-  const statusCode = job.response && job.response.statusCode
-  if (statusCode && statusCode >= 400) {
-    throw new Error(`ScraperAPI async job returned ${statusCode} from target: ${String(body).slice(0, 200)}`)
-  }
+// One instant check, not a loop. Returns real data if the job finished
+// successfully, otherwise null, whether it's still running, failed, or
+// nothing was ever submitted. A "still running" result is not an error, it
+// just means check again on a future request.
+async function checkScraperApiAsyncJob() {
+  if (!pendingAsyncJob) return null
   try {
-    return JSON.parse(body)
+    const res = await fetch(pendingAsyncJob.statusUrl)
+    if (!res.ok) { pendingAsyncJob = null; return null }
+    const job = await res.json()
+
+    if (job.status === 'finished') {
+      pendingAsyncJob = null
+      const body = job.response && job.response.body
+      const statusCode = job.response && job.response.statusCode
+      if (!body || (statusCode && statusCode >= 400)) {
+        console.log('ScraperAPI async job finished but with a bad result, status', statusCode)
+        return null
+      }
+      try { return JSON.parse(body) } catch (e) { console.log('ScraperAPI async result was not JSON'); return null }
+    }
+
+    if (job.status === 'failed') {
+      console.log('ScraperAPI async job failed')
+      pendingAsyncJob = null
+      return null
+    }
+
+    // Still running. This is expected and not an error, these jobs keep
+    // retrying in the background for up to 24h against a well-defended
+    // target. Leave it in place for a future request to check again.
+    const ageSec = Math.round((Date.now() - pendingAsyncJob.submittedAt) / 1000)
+    console.log(`ScraperAPI async job still running (submitted ${ageSec}s ago)`)
+    return null
   } catch (e) {
-    throw new Error(`ScraperAPI async result was not JSON: ${String(body).slice(0, 200)}`)
+    console.log('ScraperAPI async status check errored:', e.message)
+    return null
   }
 }
 
@@ -494,34 +517,59 @@ app.get('/prizepicks/all', async (req, res) => {
       console.log('Serving PrizePicks from cache')
       return res.json(ppCache.data)
     }
+
+    // Check on a background job before trying anything else, no reason to
+    // start over if one's already in flight.
+    const asyncResult = await checkScraperApiAsyncJob()
+    if (asyncResult) {
+      ppCache = { data: asyncResult, ts: now }
+      return res.json(asyncResult)
+    }
+
     const directUrl = `https://api.prizepicks.com/projections?per_page=250&single_stat=true`
 
-    // Three attempts, cheapest and fastest first. A direct browser request to
-    // this same URL works fine, PrizePicks itself is healthy, so try that
-    // first for free. The sync ScraperAPI call has been failing consistently
-    // (502/504), kept as a quick middle attempt in case that changes. The
-    // async job (real residential IP + actual JS rendering + ultra-premium
-    // combined) gets more time and resources than either of the above and is
-    // the one ScraperAPI support recommended for a target this well-defended.
+    // Cheapest and fastest first. Direct request works fine when PrizePicks
+    // isn't blocking, free to try. Sync ScraperAPI kept as a quick check in
+    // case that starts working again. Neither of these blocks for long.
     let data = await tryDirectFetch(directUrl)
     if (!data) {
       console.log('Direct fetch failed, trying ScraperAPI sync')
       try {
         data = await tryScraperApi(directUrl)
       } catch (e) {
-        console.log('ScraperAPI sync failed:', e.message, '— trying ScraperAPI async')
-        data = await tryScraperApiAsync(directUrl)
+        console.log('ScraperAPI sync failed:', e.message)
       }
     }
 
-    ppCache = { data, ts: now }
-    res.json(data)
+    if (data) {
+      ppCache = { data, ts: now }
+      return res.json(data)
+    }
+
+    // Both quick attempts failed. Submit a background async job if one isn't
+    // already running, don't wait for it, just let it work.
+    if (!pendingAsyncJob) {
+      try {
+        const job = await submitScraperApiAsyncJob(directUrl)
+        pendingAsyncJob = { statusUrl: job.statusUrl, submittedAt: Date.now() }
+        console.log('Submitted ScraperAPI async job, will check again on future requests')
+      } catch (e) {
+        console.error('Could not submit ScraperAPI async job:', e.message)
+      }
+    }
+
+    // Nothing available right now. Serve stale cache if there is any, real
+    // data from a while ago beats none. Otherwise say plainly that a
+    // background attempt is in progress rather than a hard, confusing error.
+    if (ppCache.data) return res.json(ppCache.data)
+    res.status(202).json({ error: 'Still trying to fetch live lines in the background. Try again in a minute.', pending: true })
   } catch (e) {
     console.error('PrizePicks fetch error:', e.message)
     if (ppCache.data) return res.json(ppCache.data)
     res.status(500).json({ error: e.message })
   }
 })
+
 
 app.get('/prizepicks/:leagueId', async (req, res) => {
   try {
