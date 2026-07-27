@@ -424,7 +424,32 @@ async function tryDirectFetch(url) {
 // Paid fallback. 45s timeout since ultra_premium mode legitimately needs more
 // than 20s sometimes, so it fails fast and falls back to cache instead of
 // hanging indefinitely.
-async function tryScraperApi(directUrl) {
+// Plain request, no premium/ultra_premium/render, exactly the URL shape
+// ScraperAPI support confirmed working in their own test (trailing slash
+// included). Costs 1 credit instead of the 75 that ultra_premium+render
+// burns per attempt, so this goes first now.
+async function tryScraperApiPlain(directUrl) {
+  const target = encodeURIComponent(directUrl)
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), 30000)
+  let response
+  try {
+    response = await fetch(`https://api.scraperapi.com/?api_key=${process.env.SCRAPER_API_KEY}&url=${target}`, { signal: controller.signal })
+  } finally {
+    clearTimeout(timeout)
+  }
+  if (!response.ok) throw new Error(`ScraperAPI (plain) returned ${response.status}`)
+  const raw = await response.text()
+  try {
+    return JSON.parse(raw)
+  } catch (e) {
+    throw new Error(`ScraperAPI (plain) did not return JSON: ${raw.slice(0, 200)}`)
+  }
+}
+
+// Kept as a fallback in case the plain request stops working again, this is
+// the expensive ultra_premium version that was the only option before.
+async function tryScraperApiUltraPremium(directUrl) {
   const target = encodeURIComponent(directUrl)
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), 45000)
@@ -434,12 +459,12 @@ async function tryScraperApi(directUrl) {
   } finally {
     clearTimeout(timeout)
   }
-  if (!response.ok) throw new Error(`ScraperAPI returned ${response.status}`)
+  if (!response.ok) throw new Error(`ScraperAPI (ultra_premium) returned ${response.status}`)
   const raw = await response.text()
   try {
     return JSON.parse(raw)
   } catch (e) {
-    throw new Error(`ScraperAPI did not return JSON: ${raw.slice(0, 200)}`)
+    throw new Error(`ScraperAPI (ultra_premium) did not return JSON: ${raw.slice(0, 200)}`)
   }
 }
 
@@ -529,15 +554,22 @@ app.get('/prizepicks/all', async (req, res) => {
     const directUrl = `https://api.prizepicks.com/projections?per_page=250&single_stat=true`
 
     // Cheapest and fastest first. Direct request works fine when PrizePicks
-    // isn't blocking, free to try. Sync ScraperAPI kept as a quick check in
-    // case that starts working again. Neither of these blocks for long.
+    // isn't blocking, free to try. Plain ScraperAPI next, ScraperAPI support
+    // confirmed this exact shape works and it's a fraction of the cost of
+    // ultra_premium. Ultra_premium stays as the fallback in case plain stops
+    // working again.
     let data = await tryDirectFetch(directUrl)
     if (!data) {
-      console.log('Direct fetch failed, trying ScraperAPI sync')
+      console.log('Direct fetch failed, trying ScraperAPI plain')
       try {
-        data = await tryScraperApi(directUrl)
+        data = await tryScraperApiPlain(directUrl)
       } catch (e) {
-        console.log('ScraperAPI sync failed:', e.message)
+        console.log('ScraperAPI plain failed:', e.message, '— trying ultra_premium')
+        try {
+          data = await tryScraperApiUltraPremium(directUrl)
+        } catch (e2) {
+          console.log('ScraperAPI ultra_premium also failed:', e2.message)
+        }
       }
     }
 
