@@ -388,6 +388,23 @@ function validateLines(picks, rawLines) {
   })
 }
 
+// PrizePicks projections responses always carry a top-level data array (plus
+// an included array of players). Anything else that happens to parse, a
+// challenge page's JSON blob, an error object, an empty shell, must never be
+// cached or served as if it were the board.
+function validProjections(d) {
+  return !!(d && Array.isArray(d.data))
+}
+
+// Collapse an HTML/text body into one short log line. Raw slices of a bot
+// challenge page were dumping dozens of lines of markup into the Railway
+// logs; the page title says everything worth knowing in one line.
+function pageSnippet(raw) {
+  const t = String(raw).match(/<title[^>]*>([^<]*)<\/title>/i)
+  if (t && t[1].trim()) return `HTML page titled "${t[1].trim()}"`
+  return String(raw).slice(0, 160).replace(/\s+/g, ' ')
+}
+
 // A plain server-side fetch with no headers looks nothing like a browser,
 // which is often enough by itself to get flagged. These headers mimic a real
 // browser hitting PrizePicks' own app, no proxy needed if this works.
@@ -410,7 +427,7 @@ async function tryDirectFetch(url) {
     try {
       return JSON.parse(raw)
     } catch (e) {
-      console.log('Direct fetch returned non-JSON:', raw.slice(0, 150))
+      console.log('Direct fetch returned non-JSON:', pageSnippet(raw))
       return null
     }
   } catch (e) {
@@ -421,17 +438,16 @@ async function tryDirectFetch(url) {
   }
 }
 
-// Paid fallback. 45s timeout since ultra_premium mode legitimately needs more
-// than 20s sometimes, so it fails fast and falls back to cache instead of
-// hanging indefinitely.
 // Plain request, no premium/ultra_premium/render, exactly the URL shape
 // ScraperAPI support confirmed working in their own test (trailing slash
 // included). Costs 1 credit instead of the 75 that ultra_premium+render
-// burns per attempt, so this goes first now.
+// burns per attempt, so this goes first. 60s timeout: ScraperAPI's own
+// guidance is to allow at least 60s before giving up on a request, their
+// side keeps retrying IPs internally for most of that window.
 async function tryScraperApiPlain(directUrl) {
   const target = encodeURIComponent(directUrl)
   const controller = new AbortController()
-  const timeout = setTimeout(() => controller.abort(), 30000)
+  const timeout = setTimeout(() => controller.abort(), 60000)
   let response
   try {
     response = await fetch(`https://api.scraperapi.com/?api_key=${process.env.SCRAPER_API_KEY}&url=${target}`, { signal: controller.signal })
@@ -443,16 +459,19 @@ async function tryScraperApiPlain(directUrl) {
   try {
     return JSON.parse(raw)
   } catch (e) {
-    throw new Error(`ScraperAPI (plain) did not return JSON: ${raw.slice(0, 200)}`)
+    throw new Error(`ScraperAPI (plain) did not return JSON: ${pageSnippet(raw)}`)
   }
 }
 
 // Kept as a fallback in case the plain request stops working again, this is
-// the expensive ultra_premium version that was the only option before.
+// the expensive ultra_premium version that was the only option before. 75s
+// timeout: ScraperAPI recommends allowing up to 70s for ultra_premium
+// requests. The old 45s abort was killing requests mid-flight, which is
+// exactly the "This operation was aborted" line the Railway logs showed.
 async function tryScraperApiUltraPremium(directUrl) {
   const target = encodeURIComponent(directUrl)
   const controller = new AbortController()
-  const timeout = setTimeout(() => controller.abort(), 45000)
+  const timeout = setTimeout(() => controller.abort(), 75000)
   let response
   try {
     response = await fetch(`https://api.scraperapi.com?api_key=${process.env.SCRAPER_API_KEY}&url=${target}&ultra_premium=true`, { signal: controller.signal })
@@ -464,7 +483,7 @@ async function tryScraperApiUltraPremium(directUrl) {
   try {
     return JSON.parse(raw)
   } catch (e) {
-    throw new Error(`ScraperAPI (ultra_premium) did not return JSON: ${raw.slice(0, 200)}`)
+    throw new Error(`ScraperAPI (ultra_premium) did not return JSON: ${pageSnippet(raw)}`)
   }
 }
 
@@ -546,32 +565,46 @@ app.get('/prizepicks/all', async (req, res) => {
     // Check on a background job before trying anything else, no reason to
     // start over if one's already in flight.
     const asyncResult = await checkScraperApiAsyncJob()
-    if (asyncResult) {
+    if (validProjections(asyncResult)) {
       ppCache = { data: asyncResult, ts: now }
       return res.json(asyncResult)
     }
 
     const directUrl = `https://api.prizepicks.com/projections?per_page=250&single_stat=true`
+    // Same projections feed on PrizePicks' partner host. Community scrapers
+    // use it because it has historically carried lighter bot protection than
+    // api.prizepicks.com. Free to try before paying ScraperAPI anything.
+    const partnerUrl = `https://partner-api.prizepicks.com/projections?per_page=250&single_stat=true`
 
-    // Cheapest and fastest first. Direct request works fine when PrizePicks
-    // isn't blocking, free to try. Plain ScraperAPI next, ScraperAPI support
-    // confirmed this exact shape works and it's a fraction of the cost of
-    // ultra_premium. Ultra_premium stays as the fallback in case plain stops
-    // working again.
+    // Cheapest and fastest first: free direct fetch against both hosts, then
+    // plain ScraperAPI (1 credit) against both hosts, then ultra_premium as
+    // the expensive last sync resort. Every result is shape-checked so a
+    // challenge page or error blob can never be cached as the board.
     let data = await tryDirectFetch(directUrl)
-    if (!data) {
-      console.log('Direct fetch failed, trying ScraperAPI plain')
+    if (!validProjections(data)) {
+      console.log('Direct fetch failed, trying partner-api host')
+      data = await tryDirectFetch(partnerUrl)
+    }
+    if (!validProjections(data)) {
+      console.log('Both direct hosts failed, trying ScraperAPI plain (main host)')
       try {
         data = await tryScraperApiPlain(directUrl)
       } catch (e) {
-        console.log('ScraperAPI plain failed:', e.message, '— trying ultra_premium')
+        console.log('ScraperAPI plain (main) failed:', e.message)
         try {
-          data = await tryScraperApiUltraPremium(directUrl)
+          console.log('Trying ScraperAPI plain (partner host)')
+          data = await tryScraperApiPlain(partnerUrl)
         } catch (e2) {
-          console.log('ScraperAPI ultra_premium also failed:', e2.message)
+          console.log('ScraperAPI plain (partner) failed:', e2.message, 'trying ultra_premium')
+          try {
+            data = await tryScraperApiUltraPremium(directUrl)
+          } catch (e3) {
+            console.log('ScraperAPI ultra_premium also failed:', e3.message)
+          }
         }
       }
     }
+    if (!validProjections(data)) data = null
 
     if (data) {
       ppCache = { data, ts: now }
