@@ -15,6 +15,7 @@ export default function App() {
   const [showSplash, setShowSplash] = useState(true)
   const [tab, setTab] = useState('tonight')
   const [showAbout, setShowAbout] = useState(false)
+  const [showLogin, setShowLogin] = useState(false)
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
@@ -23,6 +24,7 @@ export default function App() {
     })
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
       setSession(session)
+      if (session) setShowLogin(false)
     })
     return () => subscription.unsubscribe()
   }, [])
@@ -33,6 +35,11 @@ export default function App() {
     setTab('tonight')
   }
 
+  function backFromAuth() {
+    setShowLogin(false)
+    if (tab === 'gold') setTab('tonight')
+  }
+
   if (authLoading) {
     return (
       <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#070b12' }}>
@@ -41,9 +48,27 @@ export default function App() {
     )
   }
 
-  if (!session) return <Auth />
-
   if (showSplash) return <Splash onDone={() => setShowSplash(false)} />
+
+  // Auth is no longer a wall in front of the whole app. Tonight and
+  // Moneylines are public. The Gold tab is the gate: clicking it without a
+  // session lands here, and after login the user returns exactly where they
+  // were headed since tab is still 'gold'. The footer Log In uses the same
+  // screen via showLogin.
+  const needAuth = showLogin || (tab === 'gold' && !session)
+  if (needAuth) {
+    return (
+      <div style={{ position: 'relative' }}>
+        <span
+          onClick={backFromAuth}
+          style={{ position: 'fixed', top: '16px', left: '20px', zIndex: 10, cursor: 'pointer', fontSize: '11px', color: '#7a8aaa', letterSpacing: '1.5px', textTransform: 'uppercase', padding: '6px 12px', border: '1px solid rgba(122,138,170,0.25)', borderRadius: '6px', userSelect: 'none' }}
+        >
+          ← Back to picks
+        </span>
+        <Auth />
+      </div>
+    )
+  }
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', background: '#070b12', position: 'relative', overflow: 'hidden' }}>
@@ -58,13 +83,15 @@ export default function App() {
         <Navbar tab={tab} setTab={setTab} onAbout={() => setShowAbout(true)} />
         <div style={{ flex: 1, overflow: 'hidden', position: 'relative' }}>
           <div style={{ display: tab === 'tonight' ? 'flex' : 'none', position: 'absolute', inset: 0 }}><Tonight /></div>
-          <div style={{ display: tab === 'gold' ? 'flex' : 'none', position: 'absolute', inset: 0 }}><Gold /></div>
+          {session && <div style={{ display: tab === 'gold' ? 'flex' : 'none', position: 'absolute', inset: 0 }}><Gold /></div>}
           <div style={{ display: tab === 'moneylines' ? 'flex' : 'none', position: 'absolute', inset: 0 }}><Moneylines /></div>
           <div style={{ display: tab === 'chat' ? 'flex' : 'none', position: 'absolute', inset: 0 }}><Chat /></div>
         </div>
         <footer style={{ padding: '8px 24px', textAlign: 'center', fontSize: '11px', color: 'var(--text3)', letterSpacing: '1.5px', textTransform: 'uppercase', borderTop: '1px solid var(--border)', background: 'transparent', flexShrink: 0, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <span>Built by Devin Triplett · Trip Predicts</span>
-          <span onClick={handleLogout} style={{ cursor: 'pointer', color: '#7a8aaa' }}>Log Out</span>
+          {session
+            ? <span onClick={handleLogout} style={{ cursor: 'pointer', color: '#7a8aaa' }}>Log Out</span>
+            : <span onClick={() => setShowLogin(true)} style={{ cursor: 'pointer', color: '#7a8aaa' }}>Log In</span>}
         </footer>
       </div>
 

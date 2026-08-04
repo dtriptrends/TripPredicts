@@ -1419,9 +1419,24 @@ Rules:
   return grounded
 }
 
+// Tonight picks are cached per league server-side. With the board now public,
+// every anonymous visitor would otherwise fire the full per-league AI fan-out
+// on a cold load, burning Anthropic credits with zero accounts created. A 15
+// minute cache means a wave of visitors costs one generation, same pattern as
+// the gold cache. Empty boards are never cached so transient failures retry.
+let picksCache = {}
+const PICKS_CACHE_TTL = 15 * 60 * 1000
+
 app.post('/picks', async (req, res) => {
   try {
     const { currentTime, lines: rawLines, league, count = 6 } = req.body
+
+    const picksKey = (league || 'ALL').toUpperCase()
+    const pc = picksCache[picksKey]
+    if (pc && Date.now() - pc.ts < PICKS_CACHE_TTL) {
+      console.log('Serving picks from cache for', picksKey)
+      return res.json(pc.data)
+    }
     const lines = sortLines(rawLines, league)
     const pickCount = Math.min(count, 10, lines.length)
     console.log('Analyzing', lines?.length, 'lines for league:', league || 'ALL')
@@ -1463,6 +1478,7 @@ app.post('/picks', async (req, res) => {
     picks.sort((a, b) => b.conf - a.conf)
     picks = picks.slice(0, 40)
     console.log('Got', picks.length, 'picks (', picks.filter(p => REAL.includes(p.league)).length, 'real,', picks.filter(p => p.trapRisk).length, 'flagged trap )')
+    if (picks.length > 0) picksCache[picksKey] = { data: { picks }, ts: Date.now() }
     res.json({ picks })
   } catch (e) {
     console.error('Picks error:', e.message)
