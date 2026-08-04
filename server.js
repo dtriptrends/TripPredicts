@@ -1774,8 +1774,12 @@ async function fetchMoneylines(lg) {
   const [gamesToday, gamesTomorrow, oddsToday, oddsTomorrow] = await Promise.all([
     bdlFetch(`https://api.balldontlie.io/${sport.path}/v1/games?dates[]=${today}`),
     bdlFetch(`https://api.balldontlie.io/${sport.path}/v1/games?dates[]=${tomorrow}`),
-    bdlFetch(`https://api.balldontlie.io/${sport.path}/v2/odds?dates[]=${today}`),
-    bdlFetch(`https://api.balldontlie.io/${sport.path}/v2/odds?dates[]=${tomorrow}`)
+    // v1, NOT v2. Verified against BDL's own OpenAPI spec and docs for both
+    // MLB and WNBA. The v2 path came from an NBA-specific example (NBA really
+    // is v2) and was wrongly generalized; the dead-subscription 401 masked
+    // the wrong path for weeks because auth failed before path resolution.
+    bdlFetch(`https://api.balldontlie.io/${sport.path}/v1/odds?dates[]=${today}`),
+    bdlFetch(`https://api.balldontlie.io/${sport.path}/v1/odds?dates[]=${tomorrow}`)
   ])
 
   const games = {}
