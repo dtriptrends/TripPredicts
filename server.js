@@ -1750,6 +1750,12 @@ const PORT = process.env.PORT || 8080
 const MONEYLINE_SPORTS = ['MLB', 'WNBA']
 const AWAY_FIELD = { MLB: 'away_team', WNBA: 'visitor_team' }
 
+// A side is flagged VALUE when its best available price pays at least this
+// much more than the no-vig market consensus says it should. 1.5 percentage
+// points is a meaningful, findable edge; anything smaller is noise inside
+// normal book-to-book variation.
+const VALUE_EDGE_MIN = 0.015
+
 function americanToImpliedProb(odds) {
   if (odds == null) return null
   return odds > 0 ? 100 / (odds + 100) : Math.abs(odds) / (Math.abs(odds) + 100)
@@ -1795,12 +1801,56 @@ async function fetchMoneylines(lg) {
     const game = games[gameId]
     if (!game) continue
 
+    // Pregame only. A game that already started carries live or closing odds
+    // (-6000, -10000 style numbers on a decided game), which look like data
+    // but mean nothing for picking. This is why finished games from the
+    // UTC-today window were littering the board with absurd lines.
+    if (!game.date || new Date(game.date).getTime() <= Date.now()) continue
+
     const home = bestOdds(oddsList, 'moneyline_home_odds')
     const away = bestOdds(oddsList, 'moneyline_away_odds')
     if (!home || !away) continue
 
     const homeProb = americanToImpliedProb(home.odds)
     const awayProb = americanToImpliedProb(away.odds)
+
+    // No-vig market consensus. Each book's two-sided prices imply a true
+    // probability once the vig is stripped (home / (home + away)); averaging
+    // that across every book is the market's collective opinion. The VALUE
+    // edge is then simply how much better the best available price pays than
+    // that consensus says it should. All real numbers, no model, no guessing.
+    const twoSided = oddsList.filter(o => o.moneyline_home_odds != null && o.moneyline_away_odds != null)
+    let consensusHome = null
+    if (twoSided.length >= 2) {
+      const novig = twoSided.map(o => {
+        const ph = americanToImpliedProb(o.moneyline_home_odds)
+        const pa = americanToImpliedProb(o.moneyline_away_odds)
+        return ph / (ph + pa)
+      })
+      consensusHome = novig.reduce((s, v) => s + v, 0) / novig.length
+    }
+
+    let valueSide = null
+    let valueEdgePct = null
+    let homeEdgePct = null
+    let awayEdgePct = null
+    let consensusHomePct = null
+    let consensusAwayPct = null
+    if (consensusHome != null && homeProb != null && awayProb != null) {
+      const homeEdge = consensusHome - homeProb
+      const awayEdge = (1 - consensusHome) - awayProb
+      homeEdgePct = Math.round(homeEdge * 1000) / 10
+      awayEdgePct = Math.round(awayEdge * 1000) / 10
+      consensusHomePct = Math.round(consensusHome * 1000) / 10
+      consensusAwayPct = Math.round((1 - consensusHome) * 1000) / 10
+      const bestSide = homeEdge >= awayEdge ? 'home' : 'away'
+      const bestEdge = Math.max(homeEdge, awayEdge)
+      if (bestEdge >= VALUE_EDGE_MIN) {
+        valueSide = bestSide
+        valueEdgePct = Math.round(bestEdge * 1000) / 10
+      }
+    }
+
     const awayTeam = game[awayField] || {}
     const homeTeam = game.home_team || {}
 
@@ -1819,7 +1869,14 @@ async function fetchMoneylines(lg) {
       awayOdds: away.odds,
       awayVendor: away.vendor,
       awayImpliedPct: awayProb != null ? Math.round(awayProb * 1000) / 10 : null,
-      favorite: home.odds < away.odds ? 'home' : 'away'
+      favorite: home.odds < away.odds ? 'home' : 'away',
+      booksTracked: twoSided.length,
+      consensusHomePct,
+      consensusAwayPct,
+      homeEdgePct,
+      awayEdgePct,
+      valueSide,
+      valueEdgePct
     })
   }
   return results
@@ -1837,7 +1894,10 @@ async function analyzeMoneylineChunk(chunk, currentTime) {
     const favTeam = g.favorite === 'home' ? g.homeTeam : g.awayTeam
     const favOdds = g.favorite === 'home' ? g.homeOdds : g.awayOdds
     const favPct = g.favorite === 'home' ? g.homeImpliedPct : g.awayImpliedPct
-    return `- id: "${g.id}" | ${g.awayTeam} @ ${g.homeTeam} (${g.league}) | Market favors ${favTeam} at ${favOdds > 0 ? '+' : ''}${favOdds} (${favPct}% implied)`
+    const valueLine = g.valueSide
+      ? ` | VALUE flag (already computed from real prices, do not re-derive): best price on ${g.valueSide === 'home' ? g.homeTeam : g.awayTeam} pays ${g.valueEdgePct} points above the ${g.booksTracked}-book no-vig consensus`
+      : ''
+    return `- id: "${g.id}" | ${g.awayTeam} @ ${g.homeTeam} (${g.league}) | Market favors ${favTeam} at ${favOdds > 0 ? '+' : ''}${favOdds} (${favPct}% implied)${valueLine}`
   }).join('\n')
 
   const userMsg = `Current time: ${currentTime || new Date().toISOString()} ET
@@ -1923,7 +1983,16 @@ app.post('/moneylines', async (req, res) => {
       })
     ))
 
-    let games = results.flat().sort((a, b) => new Date(a.date || 0) - new Date(b.date || 0))
+    // Value picks lead the board, strongest edge first, then everything else
+    // in chronological order. The tab's job is now "here is what is actually
+    // worth a look", not "here is every game".
+    let games = results.flat().sort((a, b) => {
+      const aHasValue = a.valueSide != null
+      const bHasValue = b.valueSide != null
+      if (aHasValue !== bHasValue) return aHasValue ? -1 : 1
+      if (aHasValue && bHasValue && b.valueEdgePct !== a.valueEdgePct) return b.valueEdgePct - a.valueEdgePct
+      return new Date(a.date || 0) - new Date(b.date || 0)
+    })
     console.log('Moneylines:', games.length, 'real games across', sports.join(', '), '— running analyst')
 
     // Every league failed and nothing came back. Say so plainly instead of a
