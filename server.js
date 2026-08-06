@@ -13,6 +13,14 @@ const sleep = ms => new Promise(r => setTimeout(r, ms))
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY)
 const supabaseAdmin = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY)
 
+// Model for the per-league AI pick generation only. The analysts stay on
+// Sonnet (their web-search judgment is the product), but pick generation for
+// leagues with no real data is a candidate for Haiku at roughly a third of
+// the token price. Switchable from Railway's Variables tab with no code
+// push: set AI_PICKS_MODEL to claude-haiku-4-5 to try it, delete the
+// variable to go back.
+const AI_PICKS_MODEL = process.env.AI_PICKS_MODEL || 'claude-sonnet-4-6'
+
 let ppCache = { data: null, ts: 0 }
 const CACHE_TTL = 5 * 60 * 1000
 
@@ -1118,14 +1126,14 @@ Respond with ONLY this JSON array as your final message, nothing before or after
 
   let messages = [{ role: 'user', content: userMsg }]
   let finalText = ''
-  for (let i = 0; i < 6; i++) {
+  for (let i = 0; i < 4; i++) {
     const data = await anthropicCall({
       model: 'claude-sonnet-4-6',
       max_tokens: 3000,
-      tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 12 }],
+      tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 5 }],
       system: `You verify sports betting picks against tonight's reality. Use web search for every player on the list. Never state injury or lineup information you did not actually find via search. Output ONLY the requested JSON array as your final answer, nothing else.`,
       messages
-    })
+    }, 3, true)
     if (!data || !data.content) throw new Error((data && data.error && data.error.message) || 'No content')
     finalText += data.content.filter(b => b.type === 'text').map(b => b.text).join('\n')
     if (data.stop_reason === 'pause_turn') {
@@ -1314,18 +1322,62 @@ function buildSlips(picks) {
 // first build. The full pipeline (scan -> analyze -> pair) runs at most once
 // per 30 minutes per league.
 let goldCache = {}
-const GOLD_CACHE_TTL = 30 * 60 * 1000
+const GOLD_CACHE_TTL = 2 * 60 * 60 * 1000
+
+// Marks cache breakpoints for prompt caching. Only used on multi-round
+// pause_turn loops (the analysts, parlay, chat), where the same prefix gets
+// resent every round: with breakpoints, rounds 2+ re-read the cached prefix
+// at a tenth of the input price instead of re-buying it in full. The console
+// showed 10M input tokens in 3 days and most of them were these exact
+// resends. NOT applied to single-shot calls (aiPicks): cache writes cost
+// 1.25x, so caching content that is never re-read raises cost for nothing.
+function markCacheBreakpoints(body) {
+  const req = { ...body }
+  if (!Array.isArray(req.messages) || !req.messages.length) return req
+  const msgs = req.messages.map(m => ({ ...m }))
+
+  // Breakpoint 1: end of the first user message. System, tools, and the task
+  // prompt are identical across rounds, so every later round reads them cheap.
+  const first = { ...msgs[0] }
+  if (typeof first.content === 'string') {
+    first.content = [{ type: 'text', text: first.content, cache_control: { type: 'ephemeral' } }]
+  } else if (Array.isArray(first.content) && first.content.length) {
+    first.content = first.content.map((b, i) =>
+      i === first.content.length - 1 ? { ...b, cache_control: { type: 'ephemeral' } } : b)
+  }
+  msgs[0] = first
+
+  // Breakpoint 2: end of the latest message, so the NEXT round re-reads this
+  // round's search results from cache. Only text and tool_result blocks take
+  // the marker safely; anything else just skips it and keeps breakpoint 1.
+  if (msgs.length > 1) {
+    const last = { ...msgs[msgs.length - 1] }
+    if (typeof last.content === 'string') {
+      last.content = [{ type: 'text', text: last.content, cache_control: { type: 'ephemeral' } }]
+    } else if (Array.isArray(last.content) && last.content.length) {
+      const blocks = last.content.map(b => ({ ...b }))
+      const lb = blocks[blocks.length - 1]
+      if (lb.type === 'text' || lb.type === 'tool_result') lb.cache_control = { type: 'ephemeral' }
+      last.content = blocks
+    }
+    msgs[msgs.length - 1] = last
+  }
+
+  req.messages = msgs
+  return req
+}
 
 // Shared Anthropic call with retry. The parallel per-league fan-out can trip
 // rate limits (429) or transient overloads; silent empty returns made those
 // invisible and blanked boards. Errors are logged and retried with backoff.
-async function anthropicCall(body, tries = 3) {
+async function anthropicCall(body, tries = 3, cache = false) {
+  const payload = cache ? markCacheBreakpoints(body) : body
   let data = null
   for (let i = 0; i < tries; i++) {
     const r = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'x-api-key': API_KEY, 'anthropic-version': '2023-06-01' },
-      body: JSON.stringify(body)
+      body: JSON.stringify(payload)
     })
     data = await r.json()
     if (data && data.content) return data
@@ -1396,7 +1448,7 @@ Rules:
 - Give exactly ${pickCount} picks`
 
   const data = await anthropicCall({
-    model: 'claude-sonnet-4-6',
+    model: AI_PICKS_MODEL,
     max_tokens: 4000,
     system: `You are a PrizePicks prop analyst. Output ONLY a valid JSON array. No text before or after. Start with [ end with ].`,
     messages: [{ role: 'user', content: gold ? goldBody : tonightBody }]
@@ -1425,7 +1477,7 @@ Rules:
 // minute cache means a wave of visitors costs one generation, same pattern as
 // the gold cache. Empty boards are never cached so transient failures retry.
 let picksCache = {}
-const PICKS_CACHE_TTL = 15 * 60 * 1000
+const PICKS_CACHE_TTL = 45 * 60 * 1000
 
 app.post('/picks', async (req, res) => {
   try {
@@ -1493,7 +1545,7 @@ app.post('/gold', async (req, res) => {
     // Serve from cache when the full pipeline ran recently for this league.
     const goldKey = (league || 'ALL').toUpperCase()
     const gc = goldCache[goldKey]
-    if (gc && Date.now() - gc.ts < GOLD_CACHE_TTL) {
+    if (gc && Date.now() - gc.ts < (gc.ttl || GOLD_CACHE_TTL)) {
       console.log('Serving gold from cache for', goldKey)
       return res.json(gc.data)
     }
@@ -1548,10 +1600,17 @@ app.post('/gold', async (req, res) => {
     picks = picks.slice(0, 30)
     console.log('Got', picks.length, 'gold picks (', picks.filter(p => REAL.includes(p.league)).length, 'real ) — analyzing tonight\'s status')
 
-    // Stage 2: auto-verify tonight's reality (opponent, injuries, lineups) for
-    // the top picks, then re-rate. OUT picks are removed, real negative
-    // findings dock 10, clean checks (CONFIRMED / NO_NEWS) keep their rating.
-    picks = await analyzeGoldPicks(picks, currentTime)
+    // Stage 2: auto-verify tonight's reality (opponent, injuries, lineups),
+    // then re-rate. OUT picks are removed, real negative findings dock 10,
+    // clean checks (CONFIRMED / NO_NEWS) keep their rating. The analyst is a
+    // web-search pipeline and is the single most expensive thing this server
+    // does, so it only runs on the TOP picks; a pick ranked 25th on the board
+    // does not justify a paid verification pass. The rest ship UNANALYZED,
+    // which the card already renders honestly.
+    const ANALYZE_MAX = 12
+    const analyzed = await analyzeGoldPicks(picks.slice(0, ANALYZE_MAX), currentTime)
+    const rest = picks.slice(ANALYZE_MAX).map(p => ({ ...p, analysisStatus: 'UNANALYZED' }))
+    picks = analyzed.concat(rest)
 
     // The floor is re-enforced AFTER re-rating: a pick docked for bad news
     // that falls under its league floor does not belong on the gold board.
@@ -1600,9 +1659,16 @@ app.post('/gold', async (req, res) => {
     logGoldPicks(picks)
 
     const payload = { picks, pairs, slips, warnings }
-    // Empty or analyst-less boards are never cached: transient API failures
-    // should retry on the next load, not lock in for 30 minutes.
-    if (picks.length > 0 && analyzedAny) goldCache[goldKey] = { data: payload, ts: Date.now() }
+    // Healthy boards cache for the full TTL. Analyst-down or empty boards
+    // cache for 5 minutes as a circuit breaker: long enough that an Anthropic
+    // outage costs one pipeline run per 5 minutes instead of one per page
+    // load (that pattern is exactly how a day of retries drains a credit
+    // balance), short enough that recovery is picked up quickly.
+    if (picks.length > 0 && analyzedAny) {
+      goldCache[goldKey] = { data: payload, ts: Date.now() }
+    } else {
+      goldCache[goldKey] = { data: payload, ts: Date.now(), ttl: 5 * 60 * 1000 }
+    }
     res.json(payload)
   } catch (e) {
     console.error('Gold error:', e.message)
@@ -1626,10 +1692,10 @@ app.post('/chat', async (req, res) => {
       const res2ok = await anthropicCall({
           model: 'claude-sonnet-4-6',
           max_tokens: 4000,
-          tools: [{ type: 'web_search_20250305', name: 'web_search' }],
+          tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 5 }],
           system: `You are the Trip Predicts AI analyst for PrizePicks. You have real live prop lines provided to you. Always use the exact line numbers from the data — never change them. Prioritize NBA, MLB, NHL, NFL, and esports. Only recommend WNBA or niche sports if explicitly asked. Look for clear statistical edges — recent form, matchup advantages, usage rates, pace of play. Be suspicious of hot streaks: a player who has cleared a line in 13 or 14 of his last 15 games usually has a line that was already raised to match the streak, which makes it a regression trap, not a lock. Only recommend picks from games in the next 36 hours. Never recommend the same player twice. Spread picks across multiple sports — never more than 2 from the same league. When recommending direction, commit to it based on data. Tiers: Regular below 75%, High 75-89%, GOLD 90%+. Never use em dashes. Bold key info with **text**.`,
           messages: current
-      })
+      }, 3, true)
       const data = res2ok
       if (!data || !data.content) throw new Error('No content')
       if (data.stop_reason === 'tool_use') {
@@ -1702,14 +1768,14 @@ After researching all ${picks.length} legs, respond with ONLY this JSON object a
 
     let messages = [{ role: 'user', content: userMsg }]
     let finalText = ''
-    for (let i = 0; i < 6; i++) {
+    for (let i = 0; i < 4; i++) {
       const data = await anthropicCall({
         model: 'claude-sonnet-4-6',
         max_tokens: 2000,
-        tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 8 }],
+        tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 6 }],
         system: `You are a sports betting parlay analyst. Use web search to check today's matchups and each player's current status before giving a verdict. Never state injury or lineup information you did not actually find via search. Output ONLY the requested JSON as your final answer, nothing else.`,
         messages
-      })
+      }, 3, true)
       if (!data || !data.content) throw new Error((data && data.error && data.error.message) || 'No content from AI')
       finalText += data.content.filter(b => b.type === 'text').map(b => b.text).join('\n')
       if (data.stop_reason === 'pause_turn') {
@@ -1913,14 +1979,14 @@ Respond with ONLY this JSON array as your final message, nothing before or after
 
   let messages = [{ role: 'user', content: userMsg }]
   let finalText = ''
-  for (let i = 0; i < 6; i++) {
+  for (let i = 0; i < 4; i++) {
     const data = await anthropicCall({
       model: 'claude-sonnet-4-6',
       max_tokens: 3000,
-      tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 12 }],
+      tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 5 }],
       system: `You analyze real sports betting moneylines. Use web search for every game on the list. Never state odds or probabilities yourself, those are already provided and correct. Never state injury or lineup information you did not actually find via search. Output ONLY the requested JSON array as your final answer, nothing else.`,
       messages
-    })
+    }, 3, true)
     if (!data || !data.content) throw new Error((data && data.error && data.error.message) || 'No content')
     finalText += data.content.filter(b => b.type === 'text').map(b => b.text).join('\n')
     if (data.stop_reason === 'pause_turn') {
@@ -1959,7 +2025,7 @@ async function analyzeMoneylines(games, currentTime) {
 // Analysis is real web search across every game on the board, expensive and
 // slow to redo on every page load, so it's cached same as gold picks are.
 let moneylinesCache = {}
-const MONEYLINES_CACHE_TTL = 20 * 60 * 1000
+const MONEYLINES_CACHE_TTL = 60 * 60 * 1000
 
 app.post('/moneylines', async (req, res) => {
   try {
