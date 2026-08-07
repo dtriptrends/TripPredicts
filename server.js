@@ -24,6 +24,25 @@ const AI_PICKS_MODEL = process.env.AI_PICKS_MODEL || 'claude-sonnet-4-6'
 let ppCache = { data: null, ts: 0 }
 const CACHE_TTL = 5 * 60 * 1000
 
+// ===== REQUEST COALESCING =====
+// The anti-stampede layer. When a cache expires and many users refresh at
+// once, the first request runs the expensive build and every request that
+// arrives while it is in flight AWAITS THE SAME PROMISE instead of paying
+// for its own duplicate pipeline. Cost stops scaling with user count and
+// becomes a pure function of the cache schedule: one build per board per
+// TTL window, whether five people are refreshing or five thousand.
+const inflight = {}
+function coalesce(key, fn) {
+  if (inflight[key]) {
+    console.log('Coalescing into in-flight build:', key)
+    return inflight[key]
+  }
+  inflight[key] = (async () => {
+    try { return await fn() } finally { delete inflight[key] }
+  })()
+  return inflight[key]
+}
+
 // Stripe webhook MUST come before express.json() — needs the raw body
 app.post('/stripe/webhook', express.raw({ type: 'application/json' }), async (req, res) => {
   const sig = req.headers['stripe-signature']
@@ -562,20 +581,17 @@ async function checkScraperApiAsyncJob() {
   }
 }
 
-app.get('/prizepicks/all', async (req, res) => {
-  try {
+// The full fetch pipeline, extracted so the route can coalesce concurrent
+// callers into one run. Returns { code, body } for the route to send.
+async function buildPrizePicksBoard() {
     const now = Date.now()
-    if (ppCache.data && now - ppCache.ts < CACHE_TTL) {
-      console.log('Serving PrizePicks from cache')
-      return res.json(ppCache.data)
-    }
 
     // Check on a background job before trying anything else, no reason to
     // start over if one's already in flight.
     const asyncResult = await checkScraperApiAsyncJob()
     if (validProjections(asyncResult)) {
       ppCache = { data: asyncResult, ts: now }
-      return res.json(asyncResult)
+      return { code: 200, body: asyncResult }
     }
 
     const directUrl = `https://api.prizepicks.com/projections?per_page=250&single_stat=true`
@@ -616,7 +632,7 @@ app.get('/prizepicks/all', async (req, res) => {
 
     if (data) {
       ppCache = { data, ts: now }
-      return res.json(data)
+      return { code: 200, body: data }
     }
 
     // Both quick attempts failed. Submit a background async job if one isn't
@@ -634,8 +650,18 @@ app.get('/prizepicks/all', async (req, res) => {
     // Nothing available right now. Serve stale cache if there is any, real
     // data from a while ago beats none. Otherwise say plainly that a
     // background attempt is in progress rather than a hard, confusing error.
-    if (ppCache.data) return res.json(ppCache.data)
-    res.status(202).json({ error: 'Still trying to fetch live lines in the background. Try again in a minute.', pending: true })
+    if (ppCache.data) return { code: 200, body: ppCache.data }
+    return { code: 202, body: { error: 'Still trying to fetch live lines in the background. Try again in a minute.', pending: true } }
+}
+
+app.get('/prizepicks/all', async (req, res) => {
+  try {
+    if (ppCache.data && Date.now() - ppCache.ts < CACHE_TTL) {
+      console.log('Serving PrizePicks from cache')
+      return res.json(ppCache.data)
+    }
+    const out = await coalesce('prizepicks', buildPrizePicksBoard)
+    res.status(out.code).json(out.body)
   } catch (e) {
     console.error('PrizePicks fetch error:', e.message)
     if (ppCache.data) return res.json(ppCache.data)
@@ -1324,6 +1350,44 @@ function buildSlips(picks) {
 let goldCache = {}
 const GOLD_CACHE_TTL = 2 * 60 * 60 * 1000
 
+// ===== DAILY API BUDGET =====
+// A hard ceiling on Anthropic spend, enforced in code, per UTC day. Every
+// response's real usage numbers (input, cache writes at 1.25x, cache reads
+// at 0.1x, output, web searches) are converted to dollars and accumulated;
+// once the day's budget is spent, anthropicCall refuses to fire until
+// midnight UTC. The app degrades instead of dying: engine-scored MLB/WNBA
+// picks keep flowing (BALLDONTLIE costs nothing per call), boards serve
+// stale caches, and only the AI extras pause. This caps the worst case at
+// DAILY_API_BUDGET x 30 per month NO MATTER WHAT is hitting the server, a
+// scheduler, public traffic, a bug, or a retry loop. Raise it from Railway's
+// Variables tab (DAILY_API_BUDGET, in dollars) when revenue justifies it.
+const DAILY_API_BUDGET = Number(process.env.DAILY_API_BUDGET || 5)
+let apiSpend = { day: '', dollars: 0, calls: 0 }
+
+function budgetDay() { return new Date().toISOString().slice(0, 10) }
+
+function overBudget() {
+  if (apiSpend.day !== budgetDay()) apiSpend = { day: budgetDay(), dollars: 0, calls: 0 }
+  return apiSpend.dollars >= DAILY_API_BUDGET
+}
+
+// Sonnet-rate approximation ($3/M in, $15/M out, 1c per search). If the
+// aiPicks model is switched to Haiku this overestimates, which only makes
+// the ceiling more conservative, never less.
+function recordUsage(data) {
+  if (!data || !data.usage) return
+  const u = data.usage
+  const inTokens = (u.input_tokens || 0)
+    + (u.cache_creation_input_tokens || 0) * 1.25
+    + (u.cache_read_input_tokens || 0) * 0.1
+  const searches = (u.server_tool_use && u.server_tool_use.web_search_requests) || 0
+  const dollars = inTokens * 3 / 1e6 + (u.output_tokens || 0) * 15 / 1e6 + searches * 0.01
+  if (apiSpend.day !== budgetDay()) apiSpend = { day: budgetDay(), dollars: 0, calls: 0 }
+  apiSpend.dollars += dollars
+  apiSpend.calls += 1
+  console.log(`API spend today: $${apiSpend.dollars.toFixed(2)} of $${DAILY_API_BUDGET} (${apiSpend.calls} calls)`)
+}
+
 // Marks cache breakpoints for prompt caching. Only used on multi-round
 // pause_turn loops (the analysts, parlay, chat), where the same prefix gets
 // resent every round: with breakpoints, rounds 2+ re-read the cached prefix
@@ -1371,6 +1435,10 @@ function markCacheBreakpoints(body) {
 // rate limits (429) or transient overloads; silent empty returns made those
 // invisible and blanked boards. Errors are logged and retried with backoff.
 async function anthropicCall(body, tries = 3, cache = false) {
+  if (overBudget()) {
+    console.error(`Daily API budget of $${DAILY_API_BUDGET} spent, skipping Anthropic call until midnight UTC`)
+    return null
+  }
   const payload = cache ? markCacheBreakpoints(body) : body
   let data = null
   for (let i = 0; i < tries; i++) {
@@ -1380,6 +1448,7 @@ async function anthropicCall(body, tries = 3, cache = false) {
       body: JSON.stringify(payload)
     })
     data = await r.json()
+    recordUsage(data)
     if (data && data.content) return data
     const type = (data && data.error && data.error.type) || `http_${r.status}`
     console.error('Anthropic error:', type, (data && data.error && data.error.message) || '')
@@ -1479,18 +1548,9 @@ Rules:
 let picksCache = {}
 const PICKS_CACHE_TTL = 45 * 60 * 1000
 
-app.post('/picks', async (req, res) => {
-  try {
-    const { currentTime, lines: rawLines, league, count = 6 } = req.body
-
-    const picksKey = (league || 'ALL').toUpperCase()
-    const pc = picksCache[picksKey]
-    if (pc && Date.now() - pc.ts < PICKS_CACHE_TTL) {
-      console.log('Serving picks from cache for', picksKey)
-      return res.json(pc.data)
-    }
+async function buildPicksBoard({ currentTime, rawLines, league, count, picksKey }) {
     const lines = sortLines(rawLines, league)
-    const pickCount = Math.min(count, 10, lines.length)
+    const pickCount = Math.min(count || 6, 10, lines.length)
     console.log('Analyzing', lines?.length, 'lines for league:', league || 'ALL')
     if (!lines || lines.length === 0) throw new Error('No lines provided')
 
@@ -1531,25 +1591,37 @@ app.post('/picks', async (req, res) => {
     picks = picks.slice(0, 40)
     console.log('Got', picks.length, 'picks (', picks.filter(p => REAL.includes(p.league)).length, 'real,', picks.filter(p => p.trapRisk).length, 'flagged trap )')
     if (picks.length > 0) picksCache[picksKey] = { data: { picks }, ts: Date.now() }
-    res.json({ picks })
+    return { picks }
+}
+
+app.post('/picks', async (req, res) => {
+  try {
+    const { currentTime, lines: rawLines, league, count = 6 } = req.body
+
+    const picksKey = (league || 'ALL').toUpperCase()
+    const pc = picksCache[picksKey]
+    if (pc && Date.now() - pc.ts < PICKS_CACHE_TTL) {
+      console.log('Serving picks from cache for', picksKey)
+      return res.json(pc.data)
+    }
+    // Over budget: stale picks beat spending money we've capped. The real
+    // scanner is free, so only boards that would need AI generation stop
+    // refreshing until midnight UTC.
+    if (overBudget() && pc) {
+      console.log('Over daily budget, serving stale picks cache for', picksKey)
+      return res.json(pc.data)
+    }
+
+    const payload = await coalesce(`picks:${picksKey}`, () =>
+      buildPicksBoard({ currentTime, rawLines, league, count, picksKey }))
+    res.json(payload)
   } catch (e) {
     console.error('Picks error:', e.message)
     res.status(500).json({ error: e.message })
   }
 })
 
-app.post('/gold', async (req, res) => {
-  try {
-    const { currentTime, lines: rawLines, league } = req.body
-
-    // Serve from cache when the full pipeline ran recently for this league.
-    const goldKey = (league || 'ALL').toUpperCase()
-    const gc = goldCache[goldKey]
-    if (gc && Date.now() - gc.ts < (gc.ttl || GOLD_CACHE_TTL)) {
-      console.log('Serving gold from cache for', goldKey)
-      return res.json(gc.data)
-    }
-
+async function buildGoldBoard({ currentTime, rawLines, league, goldKey }) {
     const lines = sortLines(rawLines, league)
     console.log('Finding gold from', lines?.length, 'lines for league:', league || 'ALL')
     if (!lines || lines.length === 0) throw new Error('No lines provided')
@@ -1669,6 +1741,29 @@ app.post('/gold', async (req, res) => {
     } else {
       goldCache[goldKey] = { data: payload, ts: Date.now(), ttl: 5 * 60 * 1000 }
     }
+    return payload
+}
+
+app.post('/gold', async (req, res) => {
+  try {
+    const { currentTime, lines: rawLines, league } = req.body
+
+    // Serve from cache when the full pipeline ran recently for this league.
+    const goldKey = (league || 'ALL').toUpperCase()
+    const gc = goldCache[goldKey]
+    if (gc && Date.now() - gc.ts < (gc.ttl || GOLD_CACHE_TTL)) {
+      console.log('Serving gold from cache for', goldKey)
+      return res.json(gc.data)
+    }
+    // Over budget: yesterday's verified gold board beats an unanalyzed fresh
+    // one that costs money we've capped.
+    if (overBudget() && gc) {
+      console.log('Over daily budget, serving stale gold cache for', goldKey)
+      return res.json(gc.data)
+    }
+
+    const payload = await coalesce(`gold:${goldKey}`, () =>
+      buildGoldBoard({ currentTime, rawLines, league, goldKey }))
     res.json(payload)
   } catch (e) {
     console.error('Gold error:', e.message)
@@ -2027,17 +2122,7 @@ async function analyzeMoneylines(games, currentTime) {
 let moneylinesCache = {}
 const MONEYLINES_CACHE_TTL = 60 * 60 * 1000
 
-app.post('/moneylines', async (req, res) => {
-  try {
-    const { league, currentTime } = req.body || {}
-    const reqLeague = league ? league.toUpperCase() : null
-    const cacheKey = reqLeague || 'ALL'
-    const mc = moneylinesCache[cacheKey]
-    if (mc && Date.now() - mc.ts < MONEYLINES_CACHE_TTL) {
-      console.log('Serving moneylines from cache for', cacheKey)
-      return res.json(mc.data)
-    }
-
+async function buildMoneylinesBoard({ reqLeague, cacheKey, currentTime }) {
     const sports = reqLeague ? (MONEYLINE_SPORTS.includes(reqLeague) ? [reqLeague] : []) : MONEYLINE_SPORTS
 
     const fetchErrors = []
@@ -2059,24 +2144,51 @@ app.post('/moneylines', async (req, res) => {
       if (aHasValue && bHasValue && b.valueEdgePct !== a.valueEdgePct) return b.valueEdgePct - a.valueEdgePct
       return new Date(a.date || 0) - new Date(b.date || 0)
     })
-    console.log('Moneylines:', games.length, 'real games across', sports.join(', '), '— running analyst')
+    console.log('Moneylines:', games.length, 'real games across', sports.join(', '))
 
     // Every league failed and nothing came back. Say so plainly instead of a
     // quiet empty list, an auth error on BALLDONTLIE looks identical to "no
     // games today" otherwise, and those need very different next steps.
     if (games.length === 0 && fetchErrors.length > 0 && fetchErrors.length === sports.length) {
       console.error('Moneylines: all leagues failed —', fetchErrors.join(' | '))
-      return res.status(502).json({
+      return { code: 502, body: {
         error: `Could not fetch odds from BALLDONTLIE: ${fetchErrors.join(' | ')}`,
         games: []
-      })
+      } }
     }
 
-    games = await analyzeMoneylines(games, currentTime || new Date().toISOString())
+    // The analyst layer (web-search notes per game) is the ONLY part of this
+    // tab that costs API money; the odds and value edges are covered by the
+    // BDL subscription and plain arithmetic. Kill switch, default OFF: the
+    // tab keeps real odds, best prices, and VALUE flags at zero API cost.
+    // Re-enable by setting MONEYLINES_ANALYST=on in Railway's Variables tab.
+    const analystOn = String(process.env.MONEYLINES_ANALYST || 'off').toLowerCase() === 'on'
+    if (analystOn) {
+      games = await analyzeMoneylines(games, currentTime || new Date().toISOString())
+    } else {
+      games = games.map(g => ({ ...g, analysisNote: null, riskFlag: null, analyzed: false }))
+      console.log('Moneylines analyst disabled, serving odds and value edges only')
+    }
 
     const payload = { games }
     if (games.length > 0) moneylinesCache[cacheKey] = { data: payload, ts: Date.now() }
-    res.json(payload)
+    return { code: 200, body: payload }
+}
+
+app.post('/moneylines', async (req, res) => {
+  try {
+    const { league, currentTime } = req.body || {}
+    const reqLeague = league ? league.toUpperCase() : null
+    const cacheKey = reqLeague || 'ALL'
+    const mc = moneylinesCache[cacheKey]
+    if (mc && Date.now() - mc.ts < MONEYLINES_CACHE_TTL) {
+      console.log('Serving moneylines from cache for', cacheKey)
+      return res.json(mc.data)
+    }
+
+    const out = await coalesce(`ml:${cacheKey}`, () =>
+      buildMoneylinesBoard({ reqLeague, cacheKey, currentTime }))
+    res.status(out.code).json(out.body)
   } catch (e) {
     console.error('Moneylines error:', e.message)
     res.status(500).json({ error: e.message })
