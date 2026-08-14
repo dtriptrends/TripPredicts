@@ -1113,6 +1113,57 @@ async function logGoldPicks(picks) {
   }
 }
 
+// ===== FREE ANALYST CONTEXT (BDL) =====
+// The analyst used to burn its whole search budget rediscovering things the
+// BALLDONTLIE subscription already knows: who plays tonight, who is home,
+// who is on the injury report. This pack pulls all of that from BDL for
+// free and hands it to the analyst as verified ground truth, so its limited
+// searches go toward the only things search can answer: posted lineups,
+// starting pitchers, and late-breaking news.
+let analystCtxCache = { ts: 0, text: '' }
+const ANALYST_CTX_TTL = 30 * 60 * 1000
+
+async function buildAnalystContext() {
+  if (Date.now() - analystCtxCache.ts < ANALYST_CTX_TTL) return analystCtxCache.text
+  const today = new Date().toISOString().slice(0, 10)
+  const tomorrow = new Date(Date.now() + 86400000).toISOString().slice(0, 10)
+  const sections = []
+  for (const lg of ['MLB', 'WNBA']) {
+    const sport = BDL_SPORTS[lg]
+    const awayField = AWAY_FIELD[lg] || 'away_team'
+    try {
+      const [g1, g2] = await Promise.all([
+        bdlFetch(`https://api.balldontlie.io/${sport.path}/v1/games?dates[]=${today}`),
+        bdlFetch(`https://api.balldontlie.io/${sport.path}/v1/games?dates[]=${tomorrow}`)
+      ])
+      const games = [...(g1.data || []), ...(g2.data || [])]
+        .filter(g => g.date && new Date(g.date).getTime() > Date.now() - 6 * 3600000)
+      if (games.length) {
+        sections.push(`${lg} SCHEDULE (verified):\n` + games.map(g => {
+          const away = g[awayField] || {}
+          const home = g.home_team || {}
+          return `- ${away.abbreviation || away.name || 'Away'} @ ${home.abbreviation || home.name || 'Home'} (${home.abbreviation || home.name} is HOME), ${g.date}`
+        }).join('\n'))
+      }
+    } catch (e) { console.log(`${lg} schedule context skipped:`, e.message) }
+    try {
+      const inj = await bdlFetch(`https://api.balldontlie.io/${sport.path}/v1/player_injuries?per_page=100`)
+      const rows = (inj.data || []).slice(0, 80)
+      if (rows.length) {
+        sections.push(`${lg} INJURY REPORT (verified):\n` + rows.map(r => {
+          const pl = r.player || {}
+          const team = (pl.team && (pl.team.abbreviation || pl.team.name)) || ''
+          const name = pl.first_name ? `${pl.first_name} ${pl.last_name}` : (pl.nickname || 'Unknown')
+          return `- ${name}${team ? ' (' + team + ')' : ''}: ${r.status || 'listed'}${r.description ? ', ' + r.description : ''}`
+        }).join('\n'))
+      }
+    } catch (e) { console.log(`${lg} injury context skipped:`, e.message) }
+  }
+  const text = sections.join('\n\n')
+  analystCtxCache = { ts: Date.now(), text }
+  return text
+}
+
 // ===== GOLD AUTO-ANALYSIS =====
 // After the scoring engine selects gold candidates, a web-search pass checks
 // tonight's reality for EVERY pick on the board, all leagues — MLB, WNBA,
@@ -1128,36 +1179,49 @@ async function logGoldPicks(picks) {
 //   CAUTION   — an actual negative finding. Rating -10, ⚠ CAUTION on the
 //               card, never pairs, and drops off gold if it falls under floor.
 //   OUT       — ruled out or team not playing. Pick removed entirely.
-const ANALYZE_CHUNK = 10
+const ANALYZE_CHUNK = 12
 
-async function analyzeChunk(chunk, currentTime) {
+async function analyzeChunk(chunk, currentTime, contextText) {
   const list = chunk.map(p =>
     `- ${p.name} (${p.league}${p.team ? ' · ' + p.team : ''}): ${p.stat} ${p.dir === 'HIGHER' ? 'over' : 'under'} ${p.val}`
   ).join('\n')
 
   const userMsg = `Current time: ${currentTime || new Date().toISOString()} ET
 
-These are tonight's model-selected picks across multiple sports and esports. For EACH player, search for who they play today or tonight and their current injury or lineup status. Base status ONLY on what you actually find in search results, never on memory.
+These are tonight's model-selected picks. Your job is a REAL scouting report on each one, not a rubber stamp.
 
+${contextText ? `VERIFIED DATA already pulled from the live sports data feed. Treat this as ground truth and do NOT waste searches rediscovering it:
+
+${contextText}
+
+` : ''}PICKS TO ANALYZE:
 ${list}
 
-Status rules:
-- "CONFIRMED": you found evidence they are active, starting, or in tonight's lineup/roster with no injury designation
-- "NO_NEWS": you found NO negative information, but could not positively confirm the lineup either. This is NORMAL for games later today or tomorrow whose lineups are not posted yet. No injury designation found = NO_NEWS, not CAUTION.
-- "CAUTION": you found an ACTUAL negative: questionable or day-to-day tag, benched, minutes concern, elite opposing pitcher, roster substitution risk, weather delay risk
+Work GAME BY GAME, not player by player: group the picks by the game they belong to (use the verified schedule to find each pick's opponent and who is home), then search ONCE per game for what only search can tell you: today's posted lineup or confirmed starters, starting pitchers for MLB, and news from the last 24 hours. Prefer sources like ESPN, Rotowire, and team beat reporters. Base every claim on the verified data above or on something you actually found in a search result, never on memory.
+
+For EACH pick, cover in your note:
+- teammates OUT or questionable and what that does to this player's role (an absent star usually means more usage, shots, or at-bats for teammates)
+- opposing players OUT and whether the matchup this player faces got easier or harder because of it
+- matchup factors that matter: opposing starting pitcher and handedness for MLB, pace and rest for WNBA, home or away
+- your read on whether the evidence supports the listed over/under side or challenges it
+
+Status rules, based only on what the verified data and your searches show:
+- "CONFIRMED": found evidence they are active, starting, or in tonight's lineup with no injury designation
+- "NO_NEWS": found nothing negative, but could not positively confirm the lineup either. This is NORMAL for games whose lineups are not posted yet. No designation found = NO_NEWS, not CAUTION.
+- "CAUTION": an ACTUAL negative finding: questionable or day-to-day tag, benched, minutes concern, elite opposing pitcher, weather delay risk
 - "OUT": ruled out, not in the lineup, or their team does not play in the next 36 hours
 
 Respond with ONLY this JSON array as your final message, nothing before or after it, no markdown fences:
-[{"name":"exact player name from the list","status":"CONFIRMED","note":"1 sentence: opponent and what you found"}]`
+[{"name":"exact player name from the list","status":"CONFIRMED","opponent":"opposing team name","venue":"home","note":"2-3 sentences: the full matchup read, absences on both sides and their effect, and why the evidence supports or challenges the listed side","related":"OPTIONAL 1 sentence: a real ripple effect worth knowing, like an absence boosting this player's role. Omit this field if you found nothing real."}]`
 
   let messages = [{ role: 'user', content: userMsg }]
   let finalText = ''
   for (let i = 0; i < 4; i++) {
     const data = await anthropicCall({
       model: 'claude-sonnet-4-6',
-      max_tokens: 3000,
-      tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 5 }],
-      system: `You verify sports betting picks against tonight's reality. Use web search for every player on the list. Never state injury or lineup information you did not actually find via search. Output ONLY the requested JSON array as your final answer, nothing else.`,
+      max_tokens: 4000,
+      tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 8 }],
+      system: `You are a sports betting scout producing real matchup intelligence. Search game by game, not player by player, and lean on the verified schedule and injury data provided instead of re-searching it. Never state injury or lineup information you did not find in the provided data or an actual search result. Output ONLY the requested JSON array as your final answer, nothing else.`,
       messages
     }, 3, true)
     if (!data || !data.content) throw new Error((data && data.error && data.error.message) || 'No content')
@@ -1178,15 +1242,17 @@ Respond with ONLY this JSON array as your final message, nothing before or after
 async function analyzeGoldPicks(picks, currentTime) {
   if (!picks.length) return picks
 
-  // Every pick on the board gets the analyst, all leagues. Chunks run in
-  // parallel; a failed chunk leaves its picks UNANALYZED instead of blanking
-  // the board.
+  // Free verified context (schedule, home teams, injury report) built once
+  // per half hour from BDL and shared by every chunk.
+  const contextText = await buildAnalystContext().catch(() => '')
+
+  // A failed chunk leaves its picks UNANALYZED instead of blanking the board.
   const chunks = []
   for (let i = 0; i < picks.length; i += ANALYZE_CHUNK) chunks.push(picks.slice(i, i + ANALYZE_CHUNK))
   const byName = {}
   await mapLimit(chunks, 2, async chunk => {
     try {
-      const results = await analyzeChunk(chunk, currentTime)
+      const results = await analyzeChunk(chunk, currentTime, contextText)
       results.forEach(r => { if (r && r.name) byName[r.name.toLowerCase()] = r })
     } catch (e) {
       console.error('Analysis chunk skipped:', e.message)
@@ -1202,6 +1268,12 @@ async function analyzeGoldPicks(picks, currentTime) {
     if (status === 'OUT') { console.log('Dropped (OUT):', p.name, '-', note); continue }
     p.baseScore = p.conf
     p.analysisNote = note || null
+    // Opponent and venue from the scout, shown right on the card's meta line.
+    if (r.opponent) {
+      p.analysisOpponent = r.opponent
+      p.analysisVenue = r.venue || null
+      p.meta = `${p.meta} · ${r.venue === 'home' ? 'vs' : '@'} ${r.opponent}`
+    }
     if (status === 'CONFIRMED') {
       p.analysisStatus = 'CONFIRMED'
       p.meta = `${p.meta} · ✓ VERIFIED`
@@ -1218,6 +1290,9 @@ async function analyzeGoldPicks(picks, currentTime) {
       p.analysisStatus = 'NO_NEWS'
       if (note) p.bull = `Analyst: ${note} ${p.bull}`
     }
+    // Ripple effects (an absence boosting this player's role) lead the bull
+    // case; they are usually the single most actionable line on the card.
+    if (r.related && p.analysisStatus !== 'CAUTION') p.bull = `${r.related} ${p.bull}`
     out.push(p)
   }
   return out
