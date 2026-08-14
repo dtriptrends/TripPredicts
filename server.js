@@ -1936,29 +1936,54 @@ For EACH player, search for who they are playing today or tonight and their curr
 After researching all ${picks.length} legs, respond with ONLY this JSON object as your final message, nothing before or after it, no markdown fences:
 {"verdict":"Strong or Moderate or Risky","summary":"2-3 sentences on the overall parlay, referencing the combined rate if one was given","legs":[{"name":"player name","note":"1-2 sentences: opponent tonight, current status if found, and any risk factor"}]}`
 
-    let messages = [{ role: 'user', content: userMsg }]
-    let finalText = ''
-    for (let i = 0; i < 4; i++) {
-      const data = await anthropicCall({
-        model: 'claude-sonnet-4-6',
-        max_tokens: 2000,
-        tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 6 }],
-        system: `You are a sports betting parlay analyst. Use web search to check today's matchups and each player's current status before giving a verdict. Never state injury or lineup information you did not actually find via search. Output ONLY the requested JSON as your final answer, nothing else.`,
-        messages
-      }, 3, true)
-      if (!data || !data.content) throw new Error((data && data.error && data.error.message) || 'No content from AI')
-      finalText += data.content.filter(b => b.type === 'text').map(b => b.text).join('\n')
-      if (data.stop_reason === 'pause_turn') {
-        messages = [...messages, { role: 'assistant', content: data.content }]
-        continue
-      }
-      break
+    // The combined rate is server-side arithmetic on real numbers and never
+    // needs the API, so it must survive budget exhaustion, credit outages,
+    // and API downtime. Only the search-grounded verdict and per-leg notes
+    // need Anthropic. If the analyst cannot run, return the real math with a
+    // plain notice instead of a hard error.
+    const mathOnly = reason => ({
+      verdict: null,
+      summary: (combinedPct != null
+        ? `Combined hit rate from real historical numbers: ${combinedPct}% if every leg is independent. `
+        : '') + `Live analyst is unavailable right now (${reason}), so matchups and lineups are unverified for this slip.` +
+        (trapLegs.length ? ` Flagged TRAP RISK legs: ${trapLegs.join(', ')}.` : ''),
+      legs: [],
+      combinedRate: combinedPct,
+      analystDown: true
+    })
+
+    if (overBudget()) {
+      return res.json(mathOnly('daily analysis budget reached, resets at midnight UTC'))
     }
 
-    const start = finalText.indexOf('{')
-    const end = finalText.lastIndexOf('}')
-    if (start === -1 || end === -1) throw new Error('Could not parse the analysis, try again')
-    const parsed = JSON.parse(finalText.slice(start, end + 1))
+    let parsed = null
+    try {
+      let messages = [{ role: 'user', content: userMsg }]
+      let finalText = ''
+      for (let i = 0; i < 4; i++) {
+        const data = await anthropicCall({
+          model: 'claude-sonnet-4-6',
+          max_tokens: 2000,
+          tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 6 }],
+          system: `You are a sports betting parlay analyst. Use web search to check today's matchups and each player's current status before giving a verdict. Never state injury or lineup information you did not actually find via search. Output ONLY the requested JSON as your final answer, nothing else.`,
+          messages
+        }, 3, true)
+        if (!data || !data.content) throw new Error((data && data.error && data.error.message) || 'No content from AI')
+        finalText += data.content.filter(b => b.type === 'text').map(b => b.text).join('\n')
+        if (data.stop_reason === 'pause_turn') {
+          messages = [...messages, { role: 'assistant', content: data.content }]
+          continue
+        }
+        break
+      }
+      const start = finalText.indexOf('{')
+      const end = finalText.lastIndexOf('}')
+      if (start === -1 || end === -1) throw new Error('could not parse the analysis')
+      parsed = JSON.parse(finalText.slice(start, end + 1))
+    } catch (aiErr) {
+      console.error('Parlay analyst failed, serving math-only:', aiErr.message)
+      return res.json(mathOnly('analyst error: ' + aiErr.message))
+    }
 
     res.json({
       verdict: parsed.verdict || null,
