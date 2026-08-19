@@ -17,10 +17,10 @@ export default function Splash({ onDone }) {
     return () => clearTimeout(t)
   }, [])
 
-  const wordmark = {
-    fontFamily:'var(--font-d)',fontSize:'72px',letterSpacing:'6px',lineHeight:1,
-    WebkitBackgroundClip:'text',WebkitTextFillColor:'transparent'
-  }
+  // NOTE: the background shorthand resets background-clip, so the clip
+  // properties must come AFTER background on each element, never before.
+  const wordmark = { fontFamily:'var(--font-d)',fontSize:'72px',letterSpacing:'6px',lineHeight:1 }
+  const clipText = { WebkitBackgroundClip:'text',backgroundClip:'text',WebkitTextFillColor:'transparent' }
 
   return (
     <div className="splashRoot" style={{
@@ -38,6 +38,7 @@ export default function Splash({ onDone }) {
         <div className="splashWord" style={{
           ...wordmark,
           background:'linear-gradient(135deg,#c8960c 0%,#f5c842 40%,#fff 65%,#3b82f6 100%)',
+          ...clipText,
           opacity:0
         }}>TRIP PREDICTS</div>
         {/* Text-only light sweep: a transparent duplicate whose gradient is a
@@ -47,6 +48,7 @@ export default function Splash({ onDone }) {
           ...wordmark,position:'absolute',inset:0,
           background:'linear-gradient(105deg, transparent 42%, var(--gold3) 50%, transparent 58%)',
           backgroundSize:'250% 100%',backgroundPosition:'200% 0',
+          ...clipText,
           pointerEvents:'none'
         }}>TRIP PREDICTS</div>
       </div>
