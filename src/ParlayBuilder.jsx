@@ -11,6 +11,11 @@ export default function ParlayBuilder({ picks, onRemove, onClear }) {
 
   if (!picks || picks.length === 0) return null
 
+  // Only legs that carry verified game-log counts can call the combined
+  // number a "real hit rate". With the stats feed paused every leg is
+  // model-rated, so the label says so instead of overclaiming.
+  const anyVerified = picks.some(p => p.realHit != null && p.realTotal)
+
   async function handleAnalyze() {
     setOpen(true)
     setAnalyzing(true)
@@ -104,7 +109,7 @@ export default function ParlayBuilder({ picks, onRemove, onClear }) {
 
             {analyzing && (
               <div style={{ textAlign: 'center', padding: '30px 0', color: '#7a8aaa', fontFamily: "'Barlow',sans-serif", fontSize: '13px' }}>
-                Checking matchups and current status for {picks.length} {picks.length === 1 ? 'player' : 'players'}…
+                Checking matchups, injury reports, and current status for {picks.length} {picks.length === 1 ? 'player' : 'players'}…
               </div>
             )}
 
@@ -120,7 +125,9 @@ export default function ParlayBuilder({ picks, onRemove, onClear }) {
                     background: 'rgba(77,158,255,0.08)', border: '1px solid rgba(77,158,255,0.25)',
                     borderRadius: '10px', padding: '10px 14px', marginBottom: '14px'
                   }}>
-                    <span style={{ fontSize: '11px', color: '#7a8aaa', fontFamily: "'Barlow',sans-serif" }}>Combined rate from real hit rates (assumes independence)</span>
+                    <span style={{ fontSize: '11px', color: '#7a8aaa', fontFamily: "'Barlow',sans-serif" }}>
+                      {anyVerified ? 'Combined rate from real hit rates (assumes independence)' : 'Combined rate from each leg\'s model rating (assumes independence)'}
+                    </span>
                     <span style={{ fontFamily: "'Barlow Condensed',sans-serif", fontSize: '18px', fontWeight: 700, color: '#4d9eff' }}>{result.combinedRate}%</span>
                   </div>
                 )}

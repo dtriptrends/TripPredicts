@@ -6,17 +6,36 @@ import { supabase } from './supabase'
 
 const SERVER = 'https://trippredicts-production-cfad.up.railway.app'
 
-const LEAGUE_ORDER = ['ALL', 'MLB', 'WNBA', 'NBA', 'NHL', 'NFL', 'CS2', 'LOL', 'VALORANT', 'COD', 'SOCCER', 'TENNIS', 'GOLF', 'MMA']
+// Football season: NFL and college football lead the tab row. Any league on
+// the slate that is not listed here still gets a tab, appended at the end.
+const LEAGUE_ORDER = ['ALL', 'NFL', 'CFB', 'NBA', 'NHL', 'MLB', 'WNBA', 'CS2', 'LOL', 'VALORANT', 'COD', 'SOCCER', 'TENNIS', 'GOLF', 'MMA']
 
-// Sports backed by real BALLDONTLIE game data. These tabs get the fiery treatment.
-const REAL_DATA_LEAGUES = ['MLB', 'WNBA', 'LOL', 'CS2']
+// Sports backed by real BALLDONTLIE game data get the fiery tab treatment.
+// The BDL feed is paused for the offseason, so nothing qualifies right now.
+// Put 'MLB', 'WNBA', 'LOL', 'CS2' back here when the subscriptions return.
+const REAL_DATA_LEAGUES = []
+
+// Football is detected by prefix because PrizePicks runs partial-game and
+// season-long football boards too (NFL1H, NFLSZN, CFB1H and so on).
+function isFootball(lg) {
+  const l = String(lg || '').toUpperCase()
+  return l.startsWith('NFL') || l.startsWith('CFB') || l.includes('FOOTBALL')
+}
+
+// Football is a weekly sport. PrizePicks posts the Sunday slate days ahead,
+// and a football board that only appears 36 hours before kickoff would be
+// empty most of the week. Football lines are kept for 6 days out; every
+// other sport keeps the 36 hour window.
+const LINE_WINDOW_HOURS = 36
+const FOOTBALL_WINDOW_HOURS = 6 * 24
 
 const LEAGUE_COLORS = {
   'ALL':      '#f5c842',
+  'NFL':      '#4a90d9',
+  'CFB':      '#e8a33d',
   'NBA':      '#e17210',
   'MLB':      '#4a90d9',
   'NHL':      '#aab4cc',
-  'NFL':      '#4a90d9',
   'WNBA':     '#ff6900',
   'CS2':      '#00b4d8',
   'LOL':      '#c89b3c',
@@ -29,30 +48,31 @@ const LEAGUE_COLORS = {
 }
 
 const STEP_LABELS = [
-  ['CONNECTING', 'SCANNING LINES', 'TRAP FILTER', 'VERIFYING TONIGHT'],
-  ['STARTING SCAN', 'LIVE PROPS', 'SCORING EDGES', 'CHECKING LINEUPS'],
+  ['CONNECTING', 'SCANNING LINES', 'TRAP FILTER', 'VERIFYING STATUS'],
+  ['STARTING SCAN', 'LIVE PROPS', 'SCORING EDGES', 'CHECKING INJURY REPORTS'],
   ['GOING LIVE', 'FULL SCAN', 'HUNTING EDGES', 'STATUS CHECK'],
   ['POWERING UP', 'REAL-TIME LINES', 'DEEP ANALYSIS', 'PAIRING LEGS'],
-  ['BOOTING SCAN', 'LOADING DATA', 'WEIGHING FORM', 'FINAL VERIFY'],
+  ['BOOTING SCAN', 'LOADING SLATE', 'WEIGHING FORM', 'FINAL VERIFY'],
 ]
 
 const FACTS = [
   'Gold picks are the rarest plays on the board. Most sessions only have 1 or 2.',
-  'Gold means clearing the score floor, the trap filter, AND tonight\'s status check.',
-  'Every sport with live lines gets scanned. All picks go through the analyst.',
+  'Gold means clearing the score floor, the trap filter, AND the status check.',
+  'Football season: NFL and college football lead every board while the season is on.',
+  'Every sport with live lines gets scanned. All top picks go through the analyst.',
+  'Football props are scored on role and volume: targets, carries, snaps, and game script.',
+  'The starting quarterback decides every pass catcher on that team. The analyst checks him.',
   'Streak traps are filtered out. 12+ of 15 green games is bait, not value.',
   'Ratings are shrunk for sample size, so a short hot streak can never fake a lock.',
-  'Every top pick is verified against tonight\'s slate: opponent, lineup, injury status.',
-  'A player ruled out or missing from the lineup is removed from the board entirely.',
-  'Best Pairings shows the strongest 2-man combos, built from verified legs only.',
+  'Every top pick is checked against the injury report: designation, practice status, lineup.',
+  'A player ruled out, inactive, or missing from the lineup is removed from the board entirely.',
+  'Best Slips shows the strongest 2 to 6 man combos, built from verified legs only.',
   'Two legs from the same team never get paired. One bad team night kills both.',
   'A 2-leg Power Play pays 3x, so anything above 33% combined is a real edge.',
-  'MLB, WNBA, LoL, and CS2 picks are backed by real game data from BALLDONTLIE.',
   'Lines are fetched fresh every time so you never see stale or outdated props.',
   'The model scores the LINE, not the streak. Projection vs number is what matters.',
-  'Stat category breakdown is on every card so you can verify the logic yourself.',
-  'Only pre-game props starting within the next 36 hours are ever shown.',
-  'A red flame tab means those numbers come from verified real game logs.',
+  'Football lines stay on the board up to 6 days out. Everything else shows within 36 hours.',
+  'Outdoor football games get a weather check. Wind hurts passing and kicking props.',
   'Tap View Info on any card to read the analyst\'s finding on that player.',
   'The status check runs live web searches. That is why gold takes a moment to build.',
   'Trip Predicts is powered by Claude, one of the most capable AI models available.',
@@ -95,10 +115,11 @@ async function fetchAllLines(server) {
       const startTime = new Date(a.start_time)
       const hoursUntil = (startTime - now) / (1000 * 60 * 60)
       if (a.status !== 'pre_game') return
-      if (hoursUntil < 0 || hoursUntil > 36) return
       const playerId = proj.relationships?.new_player?.data?.id
       const player = players[playerId]
       if (!player || !player.name) return
+      const windowHours = isFootball(player.league) ? FOOTBALL_WINDOW_HOURS : LINE_WINDOW_HOURS
+      if (hoursUntil < 0 || hoursUntil > windowHours) return
       const oddsType = (a.odds_type || 'standard').toLowerCase()
       const key = `${player.name}|${a.stat_display_name}`
       const lineVal = Number(a.line_score)
@@ -173,7 +194,7 @@ export default function Gold() {
           ★ GOLD PICKS
         </div>
         <div style={{ fontSize: '14px', color: 'var(--text2)', maxWidth: '320px', lineHeight: 1.6, marginBottom: '16px' }}>
-          Every gold pick, scored, trap-filtered, and verified against tonight's lineups. Plus the strongest 2-man pairings, updated live.
+          Every gold pick, scored, trap-filtered, and verified against the injury report and lineups. NFL and college football first all season, plus the strongest slips, updated live.
         </div>
         <div style={{ fontFamily: 'var(--font-d)', fontSize: '40px', letterSpacing: '1px', color: '#f5c842', marginBottom: '4px', lineHeight: 1 }}>
           $25<span style={{ fontSize: '18px', color: 'var(--text2)' }}>/month</span>
@@ -279,8 +300,14 @@ function GoldContent() {
 
     const leagueSet = new Set(lines.map(l => (l.league || '').toUpperCase()).filter(Boolean))
     const ordered = LEAGUE_ORDER.filter(l => l === 'ALL' || leagueSet.has(l))
+    // Unlisted leagues: any football variant (NFL1H, NFLSZN, CFB1H) goes
+    // right after the main football tabs, everything else goes to the end.
     const others = [...leagueSet].filter(l => l && !LEAGUE_ORDER.includes(l))
-    setAvailableLeagues([...ordered, ...others])
+    const otherFootball = others.filter(isFootball)
+    const otherRest = others.filter(l => !isFootball(l))
+    const mainFootball = ordered.filter(isFootball)
+    const nonFootball = ordered.filter(l => !isFootball(l) && l !== 'ALL')
+    setAvailableLeagues(['ALL', ...mainFootball, ...otherFootball, ...nonFootball, ...otherRest])
     setLinesLoading(false)
 
     if (lines.length === 0) {
@@ -375,7 +402,7 @@ function GoldContent() {
       <div style={{ padding: '18px 20px 0', display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', flexShrink: 0 }}>
         <div>
           <div style={{ fontFamily: 'var(--font-d)', fontSize: '28px', letterSpacing: '2px', lineHeight: 1, background: 'linear-gradient(90deg,#d4a017,#f5c842,#fff0a0)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>★ GOLD PICKS</div>
-          <div style={{ fontSize: '11px', color: 'var(--text2)', marginTop: '3px' }}>Scored · Trap-filtered · Verified for tonight</div>
+          <div style={{ fontSize: '11px', color: 'var(--text2)', marginTop: '3px' }}>Scored · Trap-filtered · Verified against the injury report</div>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
           {!isLoading && <button onClick={handleRefresh} style={{ background: 'none', border: '1px solid var(--border2)', color: 'var(--text2)', fontFamily: 'var(--font)', fontSize: '11px', padding: '5px 12px', borderRadius: '20px', cursor: 'pointer', letterSpacing: '1px' }}>Refresh</button>}
@@ -392,7 +419,7 @@ function GoldContent() {
               {availableLeagues.map(league => {
                 const isActive = selectedLeague === league
                 const isThisLoading = loadingLeague === league
-                const color = LEAGUE_COLORS[league] || '#7a8aaa'
+                const color = LEAGUE_COLORS[league] || (isFootball(league) ? LEAGUE_COLORS['NFL'] : '#7a8aaa')
                 const cached = picksCache[league] || []
                 const isReal = REAL_DATA_LEAGUES.includes(league)
                 const realStyle = isReal ? {
@@ -420,7 +447,9 @@ function GoldContent() {
                   }}>
                     {isReal
                       ? <span style={{ fontSize: '11px', display: 'inline-block', animation: 'flameFlick 0.85s ease-in-out infinite' }}>🔥</span>
-                      : <span style={{ fontSize: '9px', color: '#f5c842' }}>★</span>}
+                      : isFootball(league)
+                        ? <span style={{ fontSize: '11px' }}>🏈</span>
+                        : <span style={{ fontSize: '9px', color: '#f5c842' }}>★</span>}
                     {league}
                     {isThisLoading && <span style={{ fontSize: '10px', animation: 'spin 1s linear infinite', display: 'inline-block' }}>⟳</span>}
                     {cached.length > 0 && !isThisLoading && <span style={{ background: isActive ? color : 'var(--border2)', color: isActive ? '#000' : 'var(--text3)', fontSize: '10px', fontWeight: 700, padding: '1px 6px', borderRadius: '10px' }}>{cached.length}</span>}
@@ -564,7 +593,7 @@ function GoldContent() {
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '40px', textAlign: 'center' }}>
           <div style={{ fontSize: '40px', marginBottom: '16px' }}>★</div>
           <div style={{ fontFamily: 'var(--font-d)', fontSize: '22px', letterSpacing: '2px', color: 'var(--text2)', marginBottom: '8px' }}>NO GOLD FOR {selectedLeague}</div>
-          <div style={{ fontSize: '13px', color: 'var(--text3)', marginBottom: '24px', lineHeight: 1.6, maxWidth: '280px' }}>No picks cleared the {selectedLeague === 'WNBA' ? '82+' : ['MLB', 'LOL', 'CS2'].includes(selectedLeague) ? '86+' : '82+'} score, the trap filter, and tonight's status check for {selectedLeague}. Try another league or check back later.</div>
+          <div style={{ fontSize: '13px', color: 'var(--text3)', marginBottom: '24px', lineHeight: 1.6, maxWidth: '280px' }}>No picks cleared the gold score floor, the trap filter, and the status check for {selectedLeague}. Try another league or check back later.</div>
           {selectedLeague !== 'ALL' && <button onClick={() => handleTabSelect('ALL')} style={{ background: 'none', border: '1px solid var(--border2)', color: 'var(--text2)', fontFamily: 'var(--font)', fontSize: '13px', padding: '8px 20px', borderRadius: '10px', cursor: 'pointer', marginBottom: '10px' }}>Check All Sports</button>}
           <button onClick={handleRefresh} style={{ background: 'none', border: '1px solid rgba(245,200,66,0.3)', color: '#f5c842', fontFamily: 'var(--font)', fontSize: '13px', padding: '8px 20px', borderRadius: '10px', cursor: 'pointer' }}>Refresh Picks</button>
         </div>
