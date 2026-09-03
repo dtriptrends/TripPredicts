@@ -1,4 +1,5 @@
 import React, { useEffect } from 'react'
+import logoPng from './trip-logo.png'
 
 // The TRIP logo (transparent PNG) now carries the splash, with PREDICTS set
 // under it in the same gradient wordmark the splash always used. Every
@@ -7,8 +8,8 @@ import React, { useEffect } from 'react'
 // logo, a gold glow and light sweep masked to its shape, a stadium field
 // fading toward the horizon under it, and a FOOTBALL SEASON tag.
 //
-// Asset: save trip-logo-transparent.png as public/trip-logo.png so Vite
-// serves it at /trip-logo.png.
+// Asset: trip-logo.png sits next to this file and is imported below, so
+// Vite bundles it with the code and the path can never 404.
 //
 // Timeline (ms):
 //   0     grid and field fade in, glow starts breathing
@@ -21,7 +22,7 @@ import React, { useEffect } from 'react'
 //   1000  a single gold light sweep crosses the logo, then PREDICTS
 //   2600  whole splash dissolves out (0.4s) instead of cutting
 //   3000  onDone
-const LOGO = '/trip-logo.png'
+const LOGO = logoPng
 
 export default function Splash({ onDone }) {
   useEffect(() => {
@@ -61,12 +62,7 @@ export default function Splash({ onDone }) {
               <stop offset="0" stopColor="var(--gold)" stopOpacity="0.15"/>
               <stop offset="1" stopColor="var(--gold)" stopOpacity="1"/>
             </linearGradient>
-            <radialGradient id="splashHorizon" cx="0.5" cy="0" r="0.6">
-              <stop offset="0" stopColor="var(--gold)" stopOpacity="0.35"/>
-              <stop offset="1" stopColor="var(--gold)" stopOpacity="0"/>
-            </radialGradient>
           </defs>
-          <rect x="0" y="0" width="1000" height="160" fill="url(#splashHorizon)"/>
           <g stroke="url(#splashFieldFade)" fill="none" strokeWidth="1.5" vectorEffect="non-scaling-stroke">
             <line x1="290" y1="0" x2="-60" y2="400"/>
             <line x1="710" y1="0" x2="1060" y2="400"/>
