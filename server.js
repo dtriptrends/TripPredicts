@@ -1435,26 +1435,32 @@ Respond with ONLY this JSON array as your final message, nothing before or after
 [{"name":"exact player name from the list","status":"CONFIRMED","opponent":"opposing team name","venue":"home","note":"2-3 sentences: the full matchup read, absences on both sides and their effect, and why the evidence supports or challenges the listed side","related":"OPTIONAL 1 sentence: a real ripple effect worth knowing, like an absence boosting this player's role. Omit this field if you found nothing real."}]`
   let messages = [{ role: 'user', content: userMsg }]
   let finalText = ''
+  let lastStop = null
   for (let i = 0; i < 4; i++) {
     const data = await anthropicCall({
       model: 'claude-sonnet-4-6',
-      max_tokens: 4000,
+      // Room for twelve 2-3 sentence notes plus narration between searches.
+      max_tokens: 8000,
       tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 8 }],
       system: `You are a sports betting scout producing real matchup intelligence. Search game by game, not player by player, and lean on any verified schedule and injury data provided instead of re-searching it. For basketball the injury report, minutes outlook, and back-to-back rest come first. For football the weekly injury report, practice participation, and quarterback status come first. Never state injury or lineup information you did not find in the provided data or an actual search result. Output ONLY the requested JSON array as your final answer, nothing else.`,
       messages
     }, 3, true)
     if (!data || !data.content) throw new Error((data && data.error && data.error.message) || 'No content')
-    finalText += data.content.filter(b => b.type === 'text').map(b => b.text).join('\n')
+    finalText += (finalText ? '\n' : '') + responseText(data)
+    lastStop = data.stop_reason
     if (data.stop_reason === 'pause_turn') {
       messages = [...messages, { role: 'assistant', content: data.content }]
       continue
     }
     break
   }
-  const start = finalText.indexOf('[')
-  const end = finalText.lastIndexOf(']')
-  if (start === -1 || end === -1) return []
-  try { return JSON.parse(finalText.slice(start, end + 1)) } catch (e) { return [] }
+  const parsed = extractJson(finalText, '[', isObjArray)
+  if (!parsed) {
+    // Say exactly why instead of returning an empty list that looks like
+    // "nothing found". max_tokens means the reply was cut off mid-answer.
+    throw new Error(`analyst reply could not be read (stop: ${lastStop}). Ends with: ${finalText.slice(-200).replace(/\s+/g, ' ')}`)
+  }
+  return parsed
 }
 async function analyzeGoldPicks(picks, currentTime) {
   if (!picks.length) return picks
@@ -1468,14 +1474,16 @@ async function analyzeGoldPicks(picks, currentTime) {
   await mapLimit(chunks, 2, async chunk => {
     try {
       const results = await analyzeChunk(chunk, currentTime, contextText)
-      results.forEach(r => { if (r && r.name) byName[r.name.toLowerCase()] = r })
+      // Match on normalized names so "Jokić" vs "Jokic" or a dropped "Jr."
+      // in the analyst's reply still lands on the right pick.
+      results.forEach(r => { if (r && r.name) byName[normName(r.name)] = r })
     } catch (e) {
       console.error('Analysis chunk skipped:', e.message)
     }
   })
   const out = []
   for (const p of picks) {
-    const r = byName[(p.name || '').toLowerCase()]
+    const r = byName[normName(p.name)]
     if (!r) { p.analysisStatus = 'UNANALYZED'; out.push(p); continue }
     const status = String(r.status || '').toUpperCase()
     const note = r.note || ''
@@ -1708,6 +1716,56 @@ function markCacheBreakpoints(body) {
   req.messages = msgs
   return req
 }
+// ===== READING MODEL REPLIES =====
+// Everything the model wrote in one response. With web search on, citations
+// split one continuous answer into many small text blocks. Those used to be
+// joined with '\n', which put raw line breaks inside JSON strings and made
+// every analyst reply unparseable: a paid call, then zero results and
+// "ANALYST DID NOT RUN". Blocks from one response are joined with nothing.
+function responseText(data) {
+  return ((data && data.content) || []).filter(b => b.type === 'text').map(b => b.text).join('')
+}
+// Pull the LAST complete top-level JSON value of the given kind out of the
+// model's text. The old code took the first '[' anywhere, so a stray bracket
+// in the model's narration between searches ("[1]", "[team news]") broke
+// the parse. This scans for every balanced value (respecting strings and
+// escapes), keeps the ones that parse and pass `valid`, and returns the last,
+// which is the final answer. Returns null when there is none.
+function extractJson(text, open, valid = () => true) {
+  const close = open === '[' ? ']' : '}'
+  const s = String(text || '').replace(/```(?:json)?/gi, '')
+  let found = null
+  let i = 0
+  while (i < s.length) {
+    if (s[i] !== open) { i++; continue }
+    let depth = 0, inStr = false, esc = false, end = -1
+    for (let j = i; j < s.length; j++) {
+      const ch = s[j]
+      if (inStr) {
+        if (esc) esc = false
+        else if (ch === '\\') esc = true
+        else if (ch === '"') inStr = false
+        continue
+      }
+      if (ch === '"') inStr = true
+      else if (ch === '[' || ch === '{') depth++
+      else if (ch === ']' || ch === '}') {
+        depth--
+        if (depth === 0) { end = ch === close ? j : -1; break }
+      }
+    }
+    if (end === -1) { i++; continue }
+    try {
+      const v = JSON.parse(s.slice(i, end + 1))
+      if (valid(v)) { found = v; i = end + 1; continue }
+    } catch (e) { /* not valid JSON, keep scanning */ }
+    i++
+  }
+  return found
+}
+// An array of objects (or empty) is a real answer; "[1]" in narration is not.
+const isObjArray = v => Array.isArray(v) && v.every(x => x && typeof x === 'object' && !Array.isArray(x))
+const isPlainObj = v => v && typeof v === 'object' && !Array.isArray(v)
 // Shared Anthropic call with retry. The parallel per-league fan-out can trip
 // rate limits (429) or transient overloads; silent empty returns made those
 // invisible and blanked boards. Errors are logged and retried with backoff.
@@ -2040,7 +2098,7 @@ async function buildGoldBoard({ currentTime, rawLines, league, goldKey }) {
     const aiWarning = aiFailureWarning(aiFailures)
     if (aiWarning) warnings.push(aiWarning)
     if (picks.length > 0 && !analyzedAny) {
-      warnings.push('The analyst could not run on this load (AI service unavailable). Statuses and slips are unverified. Check Railway logs for the Anthropic error.')
+      warnings.push('The analyst could not verify picks on this load. Statuses and slips are unverified. The exact reason is in the Railway logs under "Analysis chunk skipped".')
     }
     console.log('Gold stages — candidates:', candidates.length,
       '| final:', picks.length,
@@ -2232,23 +2290,21 @@ After researching all ${picks.length} legs, respond with ONLY this JSON object a
       for (let i = 0; i < 4; i++) {
         const data = await anthropicCall({
           model: 'claude-sonnet-4-6',
-          max_tokens: 3000,
+          max_tokens: 5000,
           tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 10 }],
           system: `You are a sharp sports betting scout producing matchup intelligence for a parlay. For every basketball leg the injury report status and minutes outlook are mandatory. For every football leg the injury designation, practice status, and starting quarterback are mandatory. For every MLB hitter leg the opposing starting pitcher, his handedness, and his quality are mandatory. Lean on any verified schedule and injury data provided instead of re-searching it. Never state injury, lineup, or pitcher information you did not find in the provided data or an actual search result. Output ONLY the requested JSON as your final answer, nothing else.`,
           messages
         }, 3, true)
         if (!data || !data.content) throw new Error((data && data.error && data.error.message) || 'No content from AI')
-        finalText += data.content.filter(b => b.type === 'text').map(b => b.text).join('\n')
+        finalText += (finalText ? '\n' : '') + responseText(data)
         if (data.stop_reason === 'pause_turn') {
           messages = [...messages, { role: 'assistant', content: data.content }]
           continue
         }
         break
       }
-      const start = finalText.indexOf('{')
-      const end = finalText.lastIndexOf('}')
-      if (start === -1 || end === -1) throw new Error('could not parse the analysis')
-      parsed = JSON.parse(finalText.slice(start, end + 1))
+      parsed = extractJson(finalText, '{', v => isPlainObj(v) && (v.verdict || v.legs))
+      if (!parsed) throw new Error(`could not read the analysis. Ends with: ${finalText.slice(-200).replace(/\s+/g, ' ')}`)
     } catch (aiErr) {
       console.error('Parlay analyst failed, serving math-only:', aiErr.message)
       return res.json(mathOnly('analyst error: ' + aiErr.message))
@@ -2437,23 +2493,22 @@ Respond with ONLY this JSON array as your final message, nothing before or after
   for (let i = 0; i < 4; i++) {
     const data = await anthropicCall({
       model: 'claude-sonnet-4-6',
-      max_tokens: 3000,
+      max_tokens: 5000,
       tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 5 }],
       system: `You analyze real sports betting moneylines. Use web search for every game on the list. Never state odds or probabilities yourself, those are already provided and correct. Never state injury or lineup information you did not actually find via search. Output ONLY the requested JSON array as your final answer, nothing else.`,
       messages
     }, 3, true)
     if (!data || !data.content) throw new Error((data && data.error && data.error.message) || 'No content')
-    finalText += data.content.filter(b => b.type === 'text').map(b => b.text).join('\n')
+    finalText += (finalText ? '\n' : '') + responseText(data)
     if (data.stop_reason === 'pause_turn') {
       messages = [...messages, { role: 'assistant', content: data.content }]
       continue
     }
     break
   }
-  const start = finalText.indexOf('[')
-  const end = finalText.lastIndexOf(']')
-  if (start === -1 || end === -1) return []
-  try { return JSON.parse(finalText.slice(start, end + 1)) } catch (e) { return [] }
+  const parsed = extractJson(finalText, '[', isObjArray)
+  if (!parsed) throw new Error(`moneyline analyst reply could not be read. Ends with: ${finalText.slice(-200).replace(/\s+/g, ' ')}`)
+  return parsed
 }
 async function analyzeMoneylines(games, currentTime) {
   if (!games.length) return games
