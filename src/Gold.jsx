@@ -390,6 +390,15 @@ function GoldContent() {
   }
 
   const isLoading = linesLoading || loadingLeague === selectedLeague
+
+  // New visitors don't know a full scan takes a while. After 3 seconds of
+  // loading, a note fades in so they wait instead of leaving.
+  const [showPatience, setShowPatience] = useState(false)
+  useEffect(() => {
+    if (!isLoading) { setShowPatience(false); return }
+    const t = setTimeout(() => setShowPatience(true), 3000)
+    return () => clearTimeout(t)
+  }, [isLoading])
   const currentPicks = picksCache[selectedLeague] || []
   const currentPairs = pairsCache[selectedLeague] || []
   const currentWarnings = warningsCache[selectedLeague] || []
@@ -480,6 +489,9 @@ function GoldContent() {
               <div style={{ height: '100%', background: 'linear-gradient(90deg,#d4a017,#f5c842,#fff0a0)', borderRadius: '3px', width: `${progress}%`, transition: 'width 0.9s cubic-bezier(0.16,1,0.3,1)' }} />
             </div>
             <div style={{ fontSize: '13px', color: 'var(--text2)', marginTop: '18px', lineHeight: 1.7, textAlign: 'center', minHeight: '44px', opacity: factVisible ? 1 : 0, transition: 'opacity 0.3s ease' }}>{facts[factIdx]}</div>
+            <div style={{ marginTop: '14px', padding: '10px 14px', borderRadius: '10px', border: '1px solid rgba(245,200,66,0.25)', background: 'rgba(245,200,66,0.06)', fontSize: '12px', color: 'var(--gold)', textAlign: 'center', lineHeight: 1.6, opacity: showPatience ? 1 : 0, transform: showPatience ? 'translateY(0)' : 'translateY(6px)', transition: 'opacity 0.6s ease, transform 0.6s ease' }}>
+              Hang tight, gold can take a minute or two. Every top pick gets checked against the injury report and lineups before it reaches the board.
+            </div>
           </div>
         </div>
       )}
