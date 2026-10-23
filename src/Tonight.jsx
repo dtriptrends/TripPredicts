@@ -1,20 +1,27 @@
 import React, { useEffect, useState } from 'react'
 import PickCard from './PickCard'
 import ParlayBuilder, { MAX_LEGS } from './ParlayBuilder'
+import { getFeedStatus, isFootball, isBasketball, orderLeagues, leagueIcon } from './feed'
 
 const SERVER = 'https://trippredicts-production-cfad.up.railway.app'
 
-const LEAGUE_ORDER = ['ALL', 'MLB', 'WNBA', 'NBA', 'NHL', 'NFL', 'CS2', 'LOL', 'VALORANT', 'COD', 'SOCCER', 'TENNIS', 'GOLF', 'MMA']
+// Base tab order. The season-focus sport (from the server, NBA this season)
+// and football are pulled to the front by orderLeagues in feed.js, and any
+// league on the slate that is not listed here still gets a tab at the end.
+const LEAGUE_ORDER = ['ALL', 'NBA', 'NFL', 'CFB', 'NHL', 'CBB', 'MLB', 'WNBA', 'CS2', 'LOL', 'VALORANT', 'COD', 'SOCCER', 'TENNIS', 'GOLF', 'MMA']
 
-// Sports backed by real BALLDONTLIE game data. These tabs get the fiery treatment.
-const REAL_DATA_LEAGUES = ['MLB', 'WNBA']
+// Leagues backed by real BALLDONTLIE game data get the fiery treatment. That
+// list comes from the server's /feed-status, so a tab only shows as real data
+// while that feed is actually live.
 
 const LEAGUE_COLORS = {
   'ALL':      '#f5c842',
   'NBA':      '#e17210',
+  'CBB':      '#f08a3c',
   'MLB':      '#4a90d9',
   'NHL':      '#aab4cc',
   'NFL':      '#4a90d9',
+  'CFB':      '#e8a33d',
   'WNBA':     '#ff6900',
   'CS2':      '#00b4d8',
   'LOL':      '#c89b3c',
@@ -36,11 +43,12 @@ const STEP_LABELS = [
 
 const FACTS = [
   'Trip Predicts pulls live lines directly from PrizePicks every time you load.',
-  'MLB and WNBA picks now show real game-by-game hit rates from verified data.',
+  'NBA season is here. Basketball leads the board, with football and every other sport right behind.',
+  'NBA picks weigh minutes first: injuries, rest, back-to-backs, and blowout risk.',
   'Gold picks require 90% confidence or higher. Most sessions only have 1 or 2.',
   'Every pick shows a bull case and a bear case so you know the risk upfront.',
   'The AI never defaults to HIGHER. Direction is set by the data.',
-  'Trip Predicts covers NBA, MLB, NHL, NFL, CS2, LoL, Valorant and more.',
+  'Trip Predicts covers NBA, NFL, college football, NHL, CS2, LoL, Valorant and more.',
   'Over 250 live props are scanned every single time you hit load.',
   'Recent form is weighted more heavily than season averages for prop bets.',
   'High usage players hit volume-based lines more consistently over time.',
@@ -133,6 +141,7 @@ async function fetchAllLines(server) {
 export default function Tonight() {
   const [allLines, setAllLines] = useState([])
   const [availableLeagues, setAvailableLeagues] = useState([])
+  const [realLeagues, setRealLeagues] = useState([])
   const [selectedLeague, setSelectedLeague] = useState('ALL')
   const [picksCache, setPicksCache] = useState({})
   const [loadingLeague, setLoadingLeague] = useState(null)
@@ -191,9 +200,10 @@ export default function Tonight() {
     setLiveCount(lines.length)
     setProgress(35)
     const leagueSet = new Set(lines.map(l => (l.league || '').toUpperCase()).filter(Boolean))
-    const ordered = LEAGUE_ORDER.filter(l => l === 'ALL' || leagueSet.has(l))
-    const others = [...leagueSet].filter(l => l && !LEAGUE_ORDER.includes(l))
-    setAvailableLeagues([...ordered, ...others])
+    // Focus sport and its variants lead, football next, then the base order.
+    const feed = await getFeedStatus()
+    setRealLeagues(feed.realLeagues)
+    setAvailableLeagues(orderLeagues(leagueSet, LEAGUE_ORDER, feed.focus))
     setLinesLoading(false)
     if (lines.length === 0) { setError('No live props on PrizePicks right now. Check back soon.'); return }
     await loadPicksForLeague('ALL', lines)
@@ -268,10 +278,10 @@ export default function Tonight() {
               {availableLeagues.map(league => {
                 const isActive = selectedLeague === league
                 const isThisLoading = loadingLeague === league
-                const color = LEAGUE_COLORS[league] || '#7a8aaa'
+                const color = LEAGUE_COLORS[league] || (isBasketball(league) ? LEAGUE_COLORS['NBA'] : isFootball(league) ? LEAGUE_COLORS['NFL'] : '#7a8aaa')
                 const cached = picksCache[league] || []
                 const hasGold = cached.some(p => p.conf >= 90)
-                const isReal = REAL_DATA_LEAGUES.includes(league)
+                const isReal = realLeagues.includes(league)
                 const realStyle = isReal ? {
                   border: `1px solid ${isActive ? '#ff7a1a' : 'rgba(255,95,25,0.55)'}`,
                   background: isActive
@@ -298,7 +308,9 @@ export default function Tonight() {
                   }}>
                     {isReal
                       ? <span style={{ fontSize: '11px', display: 'inline-block', animation: 'flameFlick 0.85s ease-in-out infinite' }}>🔥</span>
-                      : (hasGold && <span style={{ fontSize: '9px', color: '#f5c842' }}>★</span>)}
+                      : hasGold
+                        ? <span style={{ fontSize: '9px', color: '#f5c842' }}>★</span>
+                        : leagueIcon(league) && <span style={{ fontSize: '11px' }}>{leagueIcon(league)}</span>}
                     {league}
                     {isThisLoading && <span style={{ fontSize: '10px', animation: 'spin 1s linear infinite', display: 'inline-block' }}>⟳</span>}
                     {cached.length > 0 && !isThisLoading && <span style={{ background: isActive ? color : 'var(--border2)', color: isActive ? '#000' : 'var(--text3)', fontSize: '10px', fontWeight: 700, padding: '1px 6px', borderRadius: '10px' }}>{cached.length}</span>}

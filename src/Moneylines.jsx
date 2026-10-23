@@ -2,7 +2,8 @@ import React, { useEffect, useState } from 'react'
 
 const SERVER = 'https://trippredicts-production-cfad.up.railway.app'
 
-const LEAGUE_ORDER = ['ALL', 'MLB', 'WNBA']
+// NBA first this season. A tab only appears when that league has games.
+const LEAGUE_ORDER = ['ALL', 'NBA', 'MLB', 'WNBA']
 
 function fmtOdds(n) {
   if (n == null) return '—'
@@ -86,12 +87,14 @@ export default function Moneylines() {
   const [selectedLeague, setSelectedLeague] = useState('ALL')
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
+  const [notice, setNotice] = useState(null)
 
   useEffect(() => { load() }, [])
 
   async function load() {
     setLoading(true)
     setError(null)
+    setNotice(null)
     try {
       const res = await fetch(`${SERVER}/moneylines`, {
         method: 'POST',
@@ -101,6 +104,8 @@ export default function Moneylines() {
       const data = await res.json()
       if (!res.ok) throw new Error(data.error || 'Could not load moneylines')
       setAllGames(data.games || [])
+      // The server sends a plain notice when the odds feed is paused.
+      setNotice(data.paused && data.notice ? data.notice : null)
     } catch (e) {
       setError(e.message || 'Could not load moneylines')
       setAllGames([])
@@ -159,8 +164,8 @@ export default function Moneylines() {
 
       {!loading && !error && displayGames.length === 0 && (
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '40px', textAlign: 'center' }}>
-          <div style={{ fontSize: '14px', color: '#7a8aaa', marginBottom: '8px' }}>No moneylines available right now.</div>
-          <div style={{ fontSize: '12px', color: '#3a4a6a' }}>Check back closer to game time, or try another league.</div>
+          <div style={{ fontSize: '14px', color: '#7a8aaa', marginBottom: '8px', maxWidth: '360px', lineHeight: 1.6 }}>{notice || 'No moneylines available right now.'}</div>
+          {!notice && <div style={{ fontSize: '12px', color: '#3a4a6a' }}>Check back closer to game time, or try another league.</div>}
         </div>
       )}
 

@@ -3,24 +3,18 @@ import PickCard from './PickCard'
 import ParlayBuilder, { MAX_LEGS } from './ParlayBuilder'
 import { useSubscription } from './useSubscription'
 import { supabase } from './supabase'
+import { getFeedStatus, isFootball, isBasketball, orderLeagues, leagueIcon } from './feed'
 
 const SERVER = 'https://trippredicts-production-cfad.up.railway.app'
 
-// Football season: NFL and college football lead the tab row. Any league on
-// the slate that is not listed here still gets a tab, appended at the end.
-const LEAGUE_ORDER = ['ALL', 'NFL', 'CFB', 'NBA', 'NHL', 'MLB', 'WNBA', 'CS2', 'LOL', 'VALORANT', 'COD', 'SOCCER', 'TENNIS', 'GOLF', 'MMA']
+// Base tab order. The season-focus sport (from the server, NBA this season)
+// and football are pulled to the front by orderLeagues in feed.js, and any
+// league on the slate that is not listed here still gets a tab at the end.
+const LEAGUE_ORDER = ['ALL', 'NBA', 'NFL', 'CFB', 'NHL', 'CBB', 'MLB', 'WNBA', 'CS2', 'LOL', 'VALORANT', 'COD', 'SOCCER', 'TENNIS', 'GOLF', 'MMA']
 
-// Sports backed by real BALLDONTLIE game data get the fiery tab treatment.
-// The BDL feed is paused for the offseason, so nothing qualifies right now.
-// Put 'MLB', 'WNBA', 'LOL', 'CS2' back here when the subscriptions return.
-const REAL_DATA_LEAGUES = []
-
-// Football is detected by prefix because PrizePicks runs partial-game and
-// season-long football boards too (NFL1H, NFLSZN, CFB1H and so on).
-function isFootball(lg) {
-  const l = String(lg || '').toUpperCase()
-  return l.startsWith('NFL') || l.startsWith('CFB') || l.includes('FOOTBALL')
-}
+// Leagues backed by real BALLDONTLIE game data get the fiery tab treatment.
+// That list now comes from the server's /feed-status, so a tab only shows
+// as real data while that feed is actually live.
 
 // Football is a weekly sport. PrizePicks posts the Sunday slate days ahead,
 // and a football board that only appears 36 hours before kickoff would be
@@ -34,6 +28,7 @@ const LEAGUE_COLORS = {
   'NFL':      '#4a90d9',
   'CFB':      '#e8a33d',
   'NBA':      '#e17210',
+  'CBB':      '#f08a3c',
   'MLB':      '#4a90d9',
   'NHL':      '#aab4cc',
   'WNBA':     '#ff6900',
@@ -58,7 +53,11 @@ const STEP_LABELS = [
 const FACTS = [
   'Gold picks are the rarest plays on the board. Most sessions only have 1 or 2.',
   'Gold means clearing the score floor, the trap filter, AND the status check.',
-  'Football season: NFL and college football lead every board while the season is on.',
+  'NBA season: basketball leads every board, with football and every other sport right behind.',
+  'NBA props are a minutes question first. The analyst checks the injury report and minutes outlook.',
+  'Back-to-backs matter. Second-night games bring rest days and lighter minutes.',
+  'Big point spreads mean blowout risk. Starters sitting the fourth quarter kills overs.',
+  'When a star is out, his teammates get the shots. The analyst weighs who is in and who is out.',
   'Every sport with live lines gets scanned. All top picks go through the analyst.',
   'Football props are scored on role and volume: targets, carries, snaps, and game script.',
   'The starting quarterback decides every pass catcher on that team. The analyst checks him.',
@@ -157,6 +156,8 @@ async function fetchAllLines(server) {
 export default function Gold() {
   const { status } = useSubscription()
   const [loadingCheckout, setLoadingCheckout] = useState(false)
+  const [focusLabel, setFocusLabel] = useState('NBA')
+  useEffect(() => { getFeedStatus().then(f => setFocusLabel(f.focusLabel || 'NBA')) }, [])
 
   async function handleSubscribe() {
     setLoadingCheckout(true)
@@ -194,7 +195,7 @@ export default function Gold() {
           ★ GOLD PICKS
         </div>
         <div style={{ fontSize: '14px', color: 'var(--text2)', maxWidth: '320px', lineHeight: 1.6, marginBottom: '16px' }}>
-          Every gold pick, scored, trap-filtered, and verified against the injury report and lineups. NFL and college football first all season, plus the strongest slips, updated live.
+          Every gold pick, scored, trap-filtered, and verified against the injury report and lineups. {focusLabel} first all season, every other sport right behind, plus the strongest slips, updated live.
         </div>
         <div style={{ fontFamily: 'var(--font-d)', fontSize: '40px', letterSpacing: '1px', color: '#f5c842', marginBottom: '4px', lineHeight: 1 }}>
           $25<span style={{ fontSize: '18px', color: 'var(--text2)' }}>/month</span>
@@ -230,6 +231,7 @@ export default function Gold() {
 function GoldContent() {
   const [allLines, setAllLines] = useState([])
   const [availableLeagues, setAvailableLeagues] = useState([])
+  const [realLeagues, setRealLeagues] = useState([])
   const [selectedLeague, setSelectedLeague] = useState('ALL')
   const [picksCache, setPicksCache] = useState({})
   const [pairsCache, setPairsCache] = useState({})
@@ -299,15 +301,11 @@ function GoldContent() {
     setProgress(35)
 
     const leagueSet = new Set(lines.map(l => (l.league || '').toUpperCase()).filter(Boolean))
-    const ordered = LEAGUE_ORDER.filter(l => l === 'ALL' || leagueSet.has(l))
-    // Unlisted leagues: any football variant (NFL1H, NFLSZN, CFB1H) goes
-    // right after the main football tabs, everything else goes to the end.
-    const others = [...leagueSet].filter(l => l && !LEAGUE_ORDER.includes(l))
-    const otherFootball = others.filter(isFootball)
-    const otherRest = others.filter(l => !isFootball(l))
-    const mainFootball = ordered.filter(isFootball)
-    const nonFootball = ordered.filter(l => !isFootball(l) && l !== 'ALL')
-    setAvailableLeagues(['ALL', ...mainFootball, ...otherFootball, ...nonFootball, ...otherRest])
+    // Focus sport and its variants (NBA, NBA1H, NBA1Q...) lead, football and
+    // its variants next, then the base order, then anything else.
+    const feed = await getFeedStatus()
+    setRealLeagues(feed.realLeagues)
+    setAvailableLeagues(orderLeagues(leagueSet, LEAGUE_ORDER, feed.focus))
     setLinesLoading(false)
 
     if (lines.length === 0) {
@@ -419,9 +417,9 @@ function GoldContent() {
               {availableLeagues.map(league => {
                 const isActive = selectedLeague === league
                 const isThisLoading = loadingLeague === league
-                const color = LEAGUE_COLORS[league] || (isFootball(league) ? LEAGUE_COLORS['NFL'] : '#7a8aaa')
+                const color = LEAGUE_COLORS[league] || (isBasketball(league) ? LEAGUE_COLORS['NBA'] : isFootball(league) ? LEAGUE_COLORS['NFL'] : '#7a8aaa')
                 const cached = picksCache[league] || []
-                const isReal = REAL_DATA_LEAGUES.includes(league)
+                const isReal = realLeagues.includes(league)
                 const realStyle = isReal ? {
                   border: `1px solid ${isActive ? '#ff7a1a' : 'rgba(255,95,25,0.55)'}`,
                   background: isActive
@@ -447,8 +445,8 @@ function GoldContent() {
                   }}>
                     {isReal
                       ? <span style={{ fontSize: '11px', display: 'inline-block', animation: 'flameFlick 0.85s ease-in-out infinite' }}>🔥</span>
-                      : isFootball(league)
-                        ? <span style={{ fontSize: '11px' }}>🏈</span>
+                      : leagueIcon(league)
+                        ? <span style={{ fontSize: '11px' }}>{leagueIcon(league)}</span>
                         : <span style={{ fontSize: '9px', color: '#f5c842' }}>★</span>}
                     {league}
                     {isThisLoading && <span style={{ fontSize: '10px', animation: 'spin 1s linear infinite', display: 'inline-block' }}>⟳</span>}

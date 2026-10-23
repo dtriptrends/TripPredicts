@@ -79,72 +79,217 @@ app.post('/stripe/webhook', express.raw({ type: 'application/json' }), async (re
 })
 // JSON middleware comes AFTER the webhook
 app.use(express.json({ limit: '10mb' }))
-// ===== FOOTBALL SEASON =====
-// NFL and college football are the main event while the season is on. Every
-// board orders football first, football leagues always get AI coverage on
-// the ALL board, and every analyst prompt carries football-specific
-// scouting rules. PrizePicks labels college football "CFB" and also runs
-// partial-game and season-long football boards (NFL1H, NFLSZN and so on),
-// so football is detected by prefix rather than an exact list.
+// ===== SEASON FOCUS =====
+// One switch decides which sport leads the whole app: board order, which
+// leagues always get AI coverage on the ALL board, the extra scouting rules
+// in every prompt, and the tab order and splash tag on the frontend (served
+// through /feed-status). Set SEASON_FOCUS in Railway, comma separated
+// league prefixes, to change seasons without a code push:
+//   SEASON_FOCUS=NBA        basketball season (the default)
+//   SEASON_FOCUS=NFL,CFB    football season
+//   SEASON_FOCUS=MLB        baseball season
+// Matching is by prefix because PrizePicks runs partial-game and season-long
+// boards under their own labels (NBA1H, NBA1Q, NBASZN, NFL1H, CFB1H...).
+// The focus sport LEADS, it does not take over: every other sport with live
+// lines still gets scanned and still gets picks.
+const SEASON_FOCUS = String(process.env.SEASON_FOCUS || 'NBA')
+  .toUpperCase().split(',').map(s => s.trim()).filter(Boolean)
+const SEASON_FOCUS_LABEL = process.env.SEASON_FOCUS_LABEL || SEASON_FOCUS.join(' and ')
+function isFocus(lg) {
+  const l = String(lg || '').toUpperCase()
+  return SEASON_FOCUS.some(f => l.startsWith(f))
+}
+// Football and basketball each carry sport-specific scouting rules that apply
+// whenever one of their leagues is on the board, focus or not.
 function isFootball(lg) {
   const l = String(lg || '').toUpperCase()
   return l.startsWith('NFL') || l.startsWith('CFB') || l.includes('FOOTBALL')
 }
-// Sort helper: football picks first, then everything by confidence. On a
-// single-league tab this is a plain confidence sort.
-function footballFirst(a, b) {
-  const fa = isFootball(a.league), fb = isFootball(b.league)
-  if (fa !== fb) return fa ? -1 : 1
+function isBasketball(lg) {
+  const l = String(lg || '').toUpperCase()
+  return l.startsWith('NBA') || l.startsWith('WNBA') || l.startsWith('CBB') || l.startsWith('NCAAB') || l.includes('BASKETBALL')
+}
+// Rank for ordering leagues: focus first, football second (the NFL runs all
+// the way into February, so it stays near the top of the board all winter),
+// everything else after.
+function leagueRank(lg) {
+  if (isFocus(lg)) return 0
+  if (isFootball(lg)) return 1
+  return 2
+}
+// Sort helper: focus sport first, then football, then everything by
+// confidence. On a single-league tab this is a plain confidence sort.
+function focusFirst(a, b) {
+  const ra = leagueRank(a.league), rb = leagueRank(b.league)
+  if (ra !== rb) return ra - rb
   return b.conf - a.conf
+}
+// The one phrase every prompt uses to describe board priority.
+const PRIORITY_PHRASE = `Prioritize ${SEASON_FOCUS_LABEL} first while its season is on, then NFL and college football, then NHL, college basketball, and esports`
+// ===== DATES IN EASTERN TIME =====
+// "Today" for a US sports slate means today in ET. Computing it in UTC rolls
+// over to tomorrow at 8 PM ET and silently drops every late tip. These return
+// YYYY-MM-DD for the ET calendar day, offset by whole days.
+function etDate(offsetDays = 0) {
+  const d = new Date(Date.now() + offsetDays * 86400000)
+  return d.toLocaleDateString('en-CA', { timeZone: 'America/New_York' })
+}
+// Real start time of a BALLDONTLIE game in ms, or null when unknown. NBA game
+// rows carry a date-only `date` ("2026-10-23") and the actual tip time in
+// `datetime`. Reading `date` as a time puts every NBA game at midnight UTC,
+// which is 8 PM ET the day BEFORE, so every game looked already started.
+// MLB/WNBA rows carry a full timestamp in `date` and keep working.
+function gameStartMs(g) {
+  if (!g) return null
+  if (g.datetime) {
+    const t = new Date(g.datetime).getTime()
+    if (!isNaN(t)) return t
+  }
+  if (g.date && String(g.date).includes('T')) {
+    const t = new Date(g.date).getTime()
+    if (!isNaN(t)) return t
+  }
+  return null
+}
+function gameStartIso(g) {
+  const t = gameStartMs(g)
+  return t != null ? new Date(t).toISOString() : (g && g.date) || null
 }
 // ===== REAL STATS FROM BALLDONTLIE =====
 const BDL_KEY = process.env.BALLDONTLIE_KEY
-// ===== BALLDONTLIE AVAILABILITY =====
-// The BDL subscriptions are off for the offseason. Every BDL call site runs
-// through bdlAvailable() first: when the key is missing, BALLDONTLIE_ENABLED
-// is set to off in Railway, or the API has answered 401/403 recently, the
-// call is skipped instantly and the caller takes its no-data path (AI picks
-// for that league, empty analyst context, empty moneylines). Nothing throws
-// up the stack and nothing retries in a loop. The pick pipeline for
-// MLB/WNBA/LoL/CS2 becomes exactly what it already is for NFL/NBA/NHL.
-// Re-subscribe later and everything below wakes up on its own; no code push.
-const BDL_ENABLED_FLAG = String(process.env.BALLDONTLIE_ENABLED || 'on').toLowerCase() !== 'off'
-let bdlDownUntil = 0
-const BDL_DOWN_TTL = 6 * 60 * 60 * 1000
-function bdlAvailable() {
-  if (!BDL_KEY || !BDL_ENABLED_FLAG) return false
-  return Date.now() >= bdlDownUntil
-}
-// path          = BDL league slug (note: Counter-Strike is "cs", not "cs2")
-// statsPath      = per-game stats endpoint. Differs per sport and was the WNBA 404:
-//                 MLB is /stats, WNBA is /player_stats.
-// needsGameDates = MLB stat rows carry no date and /mlb/v1/stats has no date,
-//                 sort, or season_type filter, so it mixes spring training in with
-//                 the regular season. We join real dates from /mlb/v1/games
-//                 (season_type=regular) to order by date and drop spring training.
-//                 WNBA rows already carry a real game.date, so no join needed.
-// kind           = which fetch strategy to use. ball sports (MLB/WNBA) have a
-//                 player-centric stats endpoint. LoL has player_match_map_stats
-//                 with a player_id filter (one call). CS2 has no player endpoint,
-//                 so we go player -> team -> recent matches -> per-match stats.
+// ===== BALLDONTLIE CONFIG =====
+// path          = BDL league slug. NBA is "nba" (BDL's own examples call
+//                 /nba/v1/games and /nba/v2/odds; the legacy unprefixed /v1/...
+//                 form is retried automatically on a 404, see bdlFetch).
+//                 Counter-Strike is "cs", not "cs2".
+// statsPath      = per-game stats endpoint. MLB and NBA are /stats, WNBA is
+//                 /player_stats (that difference was the old WNBA 404).
+// needsGameDates = MLB stat rows carry no date, so real dates are joined from
+//                 /mlb/v1/games. WNBA and NBA rows carry game.date already.
+// multiSeason    = also pull last season's games. A brand new NBA season has
+//                 one or two games per player, under the 10-game minimum, so
+//                 without this every NBA prop falls to AI-only for the first
+//                 month. Current-season games always sort first.
+// seasonType     = sent as season_type so preseason games never count.
+// oddsVersion    = moneyline odds path version. MLB and WNBA are v1, NBA is v2,
+//                 both verified against BALLDONTLIE's own docs and examples.
+// kind           = fetch strategy. ball sports have a player-centric stats
+//                 endpoint. LoL has player_match_map_stats (one call). CS2 goes
+//                 player -> team -> recent matches -> per-match stats.
 //                 LoL and CS2 stat logs require the GOAT tier.
+// The NBA season label is the year it STARTS (2026 = the 2026-27 season), per
+// BDL's docs. It rolls over automatically in October.
+function currentNbaSeason() {
+  const now = new Date()
+  const y = Number(now.toLocaleDateString('en-US', { timeZone: 'America/New_York', year: 'numeric' }))
+  const m = Number(now.toLocaleDateString('en-US', { timeZone: 'America/New_York', month: 'numeric' }))
+  return m >= 10 ? y : y - 1
+}
 const BDL_SPORTS = {
-  MLB:  { path: 'mlb',  statsPath: 'stats',        season: 2026, supported: true, needsGameDates: true,  kind: 'ball' },
-  WNBA: { path: 'wnba', statsPath: 'player_stats', season: 2026, supported: true, needsGameDates: false, kind: 'ball' },
+  NBA:  { path: 'nba',  statsPath: 'stats',        seasonFn: currentNbaSeason, supported: true, needsGameDates: false, kind: 'ball', multiSeason: true, seasonType: 'regular', oddsVersion: 'v2', awayField: 'visitor_team' },
+  MLB:  { path: 'mlb',  statsPath: 'stats',        season: 2026, supported: true, needsGameDates: true,  kind: 'ball', oddsVersion: 'v1', awayField: 'away_team' },
+  WNBA: { path: 'wnba', statsPath: 'player_stats', season: 2026, supported: true, needsGameDates: false, kind: 'ball', oddsVersion: 'v1', awayField: 'visitor_team' },
   LOL:  { path: 'lol',  supported: true, kind: 'lol' },
   CS2:  { path: 'cs',   supported: true, kind: 'cs' },
 }
+function sportSeason(sport) {
+  return sport.seasonFn ? sport.seasonFn() : sport.season
+}
+// ===== BALLDONTLIE AVAILABILITY =====
+// BALLDONTLIE is sold per sport. BALLDONTLIE_SPORTS in Railway lists the
+// sports this key is actually subscribed to (comma separated, default NBA).
+// Only those get real-data scans, analyst context, game-log charts, and
+// moneylines; every other league uses the AI path. Add MLB, WNBA, LOL or CS2
+// back to the list when those subscriptions return, no code push.
+//
+// Health is tracked PER SPORT. A 401/403 means that sport's subscription is
+// not active, so only that sport is skipped for six hours. It used to be one
+// global flag: a single 401 from an unsubscribed sport shut the feed off for
+// every sport, including the one you were paying for.
+//
+// BALLDONTLIE_ENABLED=off is still the master kill switch.
+const BDL_ENABLED_FLAG = String(process.env.BALLDONTLIE_ENABLED || 'on').toLowerCase() !== 'off'
+const BDL_ACTIVE = String(process.env.BALLDONTLIE_SPORTS || 'NBA')
+  .toUpperCase().split(',').map(s => s.trim()).filter(s => BDL_SPORTS[s])
+const bdlDownUntil = {} // league -> ms timestamp
+const BDL_DOWN_TTL = 6 * 60 * 60 * 1000
+const BDL_SLUG_TO_LEAGUE = {}
+Object.entries(BDL_SPORTS).forEach(([lg, s]) => { BDL_SLUG_TO_LEAGUE[s.path] = lg })
+// Which league a BDL URL belongs to. The legacy unprefixed /v1/... form is NBA.
+function bdlLeagueOfUrl(url) {
+  const m = String(url).match(/api\.balldontlie\.io\/([a-z0-9]+)\/v\d/)
+  if (m && BDL_SLUG_TO_LEAGUE[m[1]]) return BDL_SLUG_TO_LEAGUE[m[1]]
+  if (/api\.balldontlie\.io\/v\d/.test(String(url))) return 'NBA'
+  return null
+}
+// bdlAvailable('NBA') -> is that sport usable right now.
+// bdlAvailable()      -> is ANY subscribed sport usable right now.
+function bdlAvailable(lg) {
+  if (!BDL_KEY || !BDL_ENABLED_FLAG) return false
+  if (lg) {
+    const L = String(lg).toUpperCase()
+    if (!BDL_ACTIVE.includes(L)) return false
+    return Date.now() >= (bdlDownUntil[L] || 0)
+  }
+  return BDL_ACTIVE.some(L => Date.now() >= (bdlDownUntil[L] || 0))
+}
+// Subscribed sports that are healthy right now, in BDL_SPORTS order.
+function realDataLeagues() {
+  return Object.keys(BDL_SPORTS).filter(lg => bdlAvailable(lg))
+}
+// Tier-gated features. BDL sells tiers: stats and injuries come with
+// ALL-STAR, odds need GOAT. A 401 from a gated endpoint means "not on this
+// tier", NOT "subscription dead", so it only switches off that one feature
+// for that sport. Moneylines failing on an ALL-STAR key must never take
+// down NBA stats.
+function bdlFeatureOfUrl(url) {
+  const u = String(url)
+  if (/\/odds(\b|\/|\?)/.test(u)) return 'odds'
+  if (/\/player_injuries/.test(u)) return 'injuries'
+  if (/\/season_averages/.test(u)) return 'season_averages'
+  return null
+}
+function bdlFeatureAvailable(lg, feature) {
+  if (!bdlAvailable(lg)) return false
+  return Date.now() >= (bdlDownUntil[`${String(lg).toUpperCase()}:${feature}`] || 0)
+}
 const gamelogCache = {}
 const GAMELOG_TTL = 60 * 60 * 1000 // 1 hour
-async function bdlFetch(url) {
-  if (!bdlAvailable()) throw new Error('BDL disabled')
+async function bdlFetch(url, attempt = 0) {
+  const lg = bdlLeagueOfUrl(url)
+  const feature = bdlFeatureOfUrl(url)
+  if (lg && feature) {
+    if (!bdlFeatureAvailable(lg, feature)) throw new Error(`BDL ${feature} not available for ${lg}`)
+  } else if (!bdlAvailable(lg || undefined)) {
+    throw new Error(`BDL disabled${lg ? ' for ' + lg : ''}`)
+  }
   const r = await fetch(url, { headers: { Authorization: BDL_KEY } })
   if (r.status === 401 || r.status === 403) {
-    // A lapsed subscription answers 401 on every call. Log it once and stop
-    // asking for six hours instead of paying the round trip 50 times a build.
-    if (Date.now() >= bdlDownUntil) console.log(`BALLDONTLIE returned ${r.status} (subscription inactive). Skipping BDL for the next 6 hours.`)
-    bdlDownUntil = Date.now() + BDL_DOWN_TTL
+    // Gated feature (odds, injuries): not on this tier, switch off just that
+    // feature for that sport. Core endpoint (players, games, stats): that
+    // sport's subscription is not active, switch off the sport. Either way
+    // log once and skip for six hours instead of paying the round trip 50
+    // times a build.
+    const key = (lg || 'UNKNOWN') + (feature ? `:${feature}` : '')
+    if (Date.now() >= (bdlDownUntil[key] || 0)) {
+      console.log(feature
+        ? `BALLDONTLIE returned ${r.status} for ${lg} ${feature} (not included in this tier). ${lg} ${feature} off for 6 hours; ${lg} stats unaffected.`
+        : `BALLDONTLIE returned ${r.status} for ${key} (subscription not active for this sport). Skipping ${key} for the next 6 hours.`)
+    }
+    bdlDownUntil[key] = Date.now() + BDL_DOWN_TTL
     throw new Error(`BDL ${r.status}`)
+  }
+  // NBA path safety net: BDL's docs show /v1/... while its own examples use
+  // /nba/v1/... Try the prefixed form first; on a 404 retry the legacy form
+  // once, so either convention keeps working without a deploy.
+  if (r.status === 404 && attempt === 0 && /api\.balldontlie\.io\/nba\/v\d/.test(url)) {
+    return bdlFetch(url.replace('api.balldontlie.io/nba/', 'api.balldontlie.io/'), 1)
+  }
+  // Rate limited (ALL-STAR is 60 requests a minute). Back off and retry
+  // twice instead of silently dropping the player from the scan.
+  if (r.status === 429 && attempt < 2) {
+    await sleep(1500 * (attempt + 1))
+    return bdlFetch(url, attempt + 1)
   }
   if (!r.ok) throw new Error(`BDL ${r.status}`)
   return r.json()
@@ -174,9 +319,18 @@ function rowDate(row) {
   if (row.game && row.game.date) return row.game.date
   return null
 }
+// Minutes played from a basketball row. BDL sends a string: whole minutes
+// ("30") in current data, "mm:ss" ("30:12") in some older rows. Number("30:12")
+// is NaN, which would read every such game as a DNP, so parse the minute part.
+function minutesOf(row) {
+  const raw = row && row.min
+  if (raw == null) return 0
+  const n = parseInt(String(raw).split(':')[0], 10)
+  return isNaN(n) ? 0 : n
+}
 // Drop did-not-play rows so a DNP never counts as a miss in a hit-rate.
 function bdlPlayed(row, lg) {
-  if (lg === 'WNBA') return (Number(row.min) || 0) > 0
+  if (lg === 'WNBA' || lg === 'NBA') return minutesOf(row) > 0
   if (lg === 'MLB') {
     const pa = Number(row.plate_appearances) || 0
     const ab = Number(row.at_bats) || 0
@@ -187,32 +341,74 @@ function bdlPlayed(row, lg) {
   }
   return true
 }
-// MLB / WNBA: player-centric stats endpoint. MLB needs the date join described
-// above; WNBA carries game.date already.
+// ===== PLAYER NAME MATCHING =====
+// PrizePicks and BALLDONTLIE spell names differently often enough to matter:
+// suffixes ("Jaren Jackson Jr."), accents ("Jokić" vs "Jokic"), periods
+// ("P.J. Washington" vs "PJ Washington"), apostrophes ("De'Aaron Fox").
+// The old lookup searched by the LAST WORD of the name, which for
+// "Jaren Jackson Jr." is "Jr.", and when nothing matched exactly it took
+// whoever came back first. That can put a different player's stats on the
+// card, so a wrong match is now treated as no match.
+const NAME_SUFFIXES = new Set(['jr', 'sr', 'ii', 'iii', 'iv', 'v'])
+function normName(s) {
+  const tokens = String(s || '')
+    .normalize('NFD').replace(/[̀-ͯ]/g, '')   // strip accents
+    .toLowerCase()
+    .replace(/[.'’`]/g, '')                               // P.J. -> pj, De'Aaron -> deaaron
+    .replace(/[^a-z0-9\s-]/g, ' ')
+    .split(/\s+/).filter(Boolean)
+  while (tokens.length > 2 && NAME_SUFFIXES.has(tokens[tokens.length - 1])) tokens.pop()
+  return tokens.join(' ')
+}
+// Find the BDL player record for a PrizePicks name. Searches by last name,
+// then first name, 100 results each, and only accepts an exact normalized
+// full-name match. Several exact matches happen with father/son pairs
+// ("Jaren Jackson" and "Jaren Jackson Jr." normalize the same), so the
+// highest id wins: BDL ids grow over time, so that is the newer player.
+// A single search result is accepted on its own only if the last names
+// agree. Returns null rather than guessing.
+async function findBdlPlayer(player, sport) {
+  const target = normName(player)
+  const parts = target.split(' ')
+  if (!parts.length || !parts[0]) return null
+  const last = parts[parts.length - 1]
+  const first = parts[0]
+  const terms = [...new Set([last, first])]
+  for (const term of terms) {
+    const pData = await bdlFetch(`https://api.balldontlie.io/${sport.path}/v1/players?search=${encodeURIComponent(term)}&per_page=100`)
+    const pool = pData.data || []
+    const exact = pool.filter(p => normName(`${p.first_name || ''} ${p.last_name || ''}`) === target || normName(p.full_name) === target)
+    if (exact.length) return exact.sort((a, b) => (b.id || 0) - (a.id || 0))[0]
+    if (pool.length === 1) {
+      const only = pool[0]
+      const onlyLast = normName(only.last_name || only.full_name || '').split(' ').pop()
+      if (onlyLast === last) return only
+    }
+  }
+  return null
+}
+// MLB / WNBA / NBA: player-centric stats endpoint. MLB needs the date join
+// described above; WNBA and NBA carry game.date already.
 // Returns BOTH `games` (last 15, what the card displays) and `gamesFull` (up to
 // 40, what the scoring engine uses for season averages and volatility). The
 // scoring engine needs the longer window: you cannot detect a shaded line
 // without knowing what the player's normal season looks like.
 async function ballGamelog(player, lg, sport) {
-  const searchTerm = player.trim().split(' ').slice(-1)[0]
-  const pData = await bdlFetch(`https://api.balldontlie.io/${sport.path}/v1/players?search=${encodeURIComponent(searchTerm)}`)
-  const players = pData.data || []
-  if (players.length === 0) return { player, league: lg, games: [], gamesFull: [], note: 'Player not found in stats database.' }
-  const lowerFull = player.trim().toLowerCase()
-  let match = players.find(p => `${p.first_name} ${p.last_name}`.toLowerCase() === lowerFull)
-  if (!match) match = players.find(p => (p.full_name || '').toLowerCase() === lowerFull)
-  if (!match) match = players[0]
+  const match = await findBdlPlayer(player, sport)
+  if (!match) return { player, league: lg, games: [], gamesFull: [], note: 'Player not found in stats database.' }
+  const season = sportSeason(sport)
   let gamesFull = []
+  let spansSeasons = false
   if (sport.needsGameDates) {
     const teamId = match.team && match.team.id
     if (teamId) {
       // Date map from the team's regular-season games (also strips spring training).
-      const gameRows = await bdlFetchAll(`https://api.balldontlie.io/${sport.path}/v1/games?seasons[]=${sport.season}&team_ids[]=${teamId}&season_type=regular&per_page=100`)
+      const gameRows = await bdlFetchAll(`https://api.balldontlie.io/${sport.path}/v1/games?seasons[]=${season}&team_ids[]=${teamId}&season_type=regular&per_page=100`)
       const dateMap = {}
       gameRows.forEach(g => { if (g.id && g.date) dateMap[g.id] = g.date })
       // The player's full season stat rows, using single-value params that the
       // API honors reliably (the old game_ids[] list collapsed to one game).
-      const statRows = await bdlFetchAll(`https://api.balldontlie.io/${sport.path}/v1/${sport.statsPath}?player_ids[]=${match.id}&seasons[]=${sport.season}&per_page=100`)
+      const statRows = await bdlFetchAll(`https://api.balldontlie.io/${sport.path}/v1/${sport.statsPath}?player_ids[]=${match.id}&seasons[]=${season}&per_page=100`)
       gamesFull = statRows
         .filter(g => bdlPlayed(g, lg))
         .map(g => ({ ...g, date: dateMap[g.game_id] || null }))
@@ -221,12 +417,20 @@ async function ballGamelog(player, lg, sport) {
         .slice(0, 40)
     }
   } else {
-    const sData = await bdlFetch(`https://api.balldontlie.io/${sport.path}/v1/${sport.statsPath}?player_ids[]=${match.id}&seasons[]=${sport.season}&per_page=100`)
-    gamesFull = (sData.data || [])
+    // NBA early season: add last season so the sample clears the minimum.
+    // Two seasons of one player is under 200 rows, two pages at most.
+    const seasons = sport.multiSeason ? [season, season - 1] : [season]
+    const seasonQs = seasons.map(s => `seasons[]=${s}`).join('&')
+    const typeQs = sport.seasonType ? `&season_type=${sport.seasonType}` : ''
+    const rows = await bdlFetchAll(`https://api.balldontlie.io/${sport.path}/v1/${sport.statsPath}?player_ids[]=${match.id}&${seasonQs}${typeQs}&per_page=100`, 2)
+    gamesFull = rows
       .filter(g => bdlPlayed(g, lg))
       .map(g => ({ ...g, date: rowDate(g) }))
       .sort((a, b) => gameSortKey(b) - gameSortKey(a))
       .slice(0, 40)
+    if (sport.multiSeason) {
+      spansSeasons = gamesFull.slice(0, 15).some(g => g.game && g.game.season != null && Number(g.game.season) !== season)
+    }
   }
   const games = gamesFull.slice(0, 15)
   return {
@@ -235,7 +439,12 @@ async function ballGamelog(player, lg, sport) {
     league: lg,
     games,
     gamesFull,
-    note: games.length ? `${games.length} recent games from BALLDONTLIE.` : 'No recent games found for this season.'
+    // True when the last 15 reach back into last season (early in a new
+    // season). The card says so instead of implying it is all this year.
+    spansSeasons,
+    note: games.length
+      ? `${games.length} recent games from BALLDONTLIE${spansSeasons ? ', including last season' : ''}.`
+      : 'No recent games found for this season.'
   }
 }
 // LoL: one call. player_match_map_stats accepts a player_id filter and returns
@@ -316,6 +525,18 @@ async function csGamelog(player, lg) {
     note: games.length ? `${games.length} recent matches from BALLDONTLIE (match totals).` : 'No recent matches found.'
   }
 }
+// What the frontend needs to order tabs and label real data honestly: the
+// season focus, and which leagues have a LIVE real-data feed right now.
+// Driven entirely by Railway variables, so switching seasons or adding a
+// BALLDONTLIE sport never needs a frontend change. No keys or secrets here.
+app.get('/feed-status', (req, res) => {
+  res.json({
+    focus: SEASON_FOCUS,
+    focusLabel: SEASON_FOCUS_LABEL,
+    realLeagues: realDataLeagues(),
+    moneylineLeagues: moneylineSports()
+  })
+})
 app.post('/player-gamelog', async (req, res) => {
   try {
     const { player, league } = req.body
@@ -324,9 +545,9 @@ app.post('/player-gamelog', async (req, res) => {
     const sport = BDL_SPORTS[lg]
     if (!sport) return res.json({ player, league: lg, games: [], note: `${lg} stats not available yet.` })
     if (!sport.supported) return res.json({ player, league: lg, games: [], supported: false, note: sport.reason })
-    // Feed is off: answer cleanly with an empty log so the card hides its
-    // chart instead of showing an error.
-    if (!bdlAvailable()) return res.json({ player, league: lg, games: [], note: 'Verified game logs are not active right now.' })
+    // Feed is off for this sport: answer cleanly with feedOff so the card
+    // shows its normal recent-form note instead of a "no data" message.
+    if (!bdlAvailable(lg)) return res.json({ player, league: lg, games: [], feedOff: true, note: 'Verified game logs are not active right now.' })
     const cacheKey = `${lg}|${player.trim().toLowerCase()}`
     const cached = gamelogCache[cacheKey]
     if (cached && Date.now() - cached.ts < GAMELOG_TTL) return res.json(cached.data)
@@ -343,8 +564,9 @@ app.post('/player-gamelog', async (req, res) => {
 })
 function sortLines(rawLines, league) {
   if (!rawLines) return []
-  const PRIORITY = { 'NFL': 1, 'CFB': 2, 'NBA': 3, 'MLB': 4, 'NHL': 5, 'WNBA': 6, 'CS2': 7, 'LOL': 7, 'VALORANT': 7, 'COD': 7 }
-  const prio = lg => PRIORITY[lg] || (isFootball(lg) ? 2 : 99)
+  // Focus sport first, football second, then the usual order.
+  const PRIORITY = { 'NBA': 3, 'NFL': 3, 'CFB': 4, 'NHL': 5, 'CBB': 6, 'MLB': 7, 'WNBA': 8, 'CS2': 9, 'LOL': 9, 'VALORANT': 9, 'COD': 9 }
+  const prio = lg => isFocus(lg) ? 0 : isFootball(lg) ? 1 + (PRIORITY[lg] || 4) / 10 : (PRIORITY[lg] || 99)
   if (league) {
     return rawLines.filter(l => (l.league || '').toUpperCase() === league.toUpperCase()).slice(0, 100)
   }
@@ -689,12 +911,17 @@ app.post('/stripe/create-checkout', async (req, res) => {
     res.status(500).json({ error: e.message })
   }
 })
-// Server-side copy of the card's stat mapping (MLB + WNBA only), kept in sync
-// so the grounded confidence equals the hit rate the card draws.
+// Server-side copy of the card's stat mapping, kept in sync so the grounded
+// confidence equals the hit rate the card draws. NBA and WNBA rows share the
+// exact same BDL field names (pts, reb, ast, fg3m, turnover...), so they
+// share one basketball mapper.
 function bdlStatValueServer(league, g, propLabel) {
   const p = String(propLabel || '').toLowerCase()
   if (p.includes('fantasy') || /\bfs\b/.test(p)) return null // weighted formula we can't verify; skip, don't fake
-  if (league === 'WNBA') {
+  if (league === 'WNBA' || league === 'NBA') {
+    // Partial-game props (1st quarter, 1st half) can't be measured from a
+    // full-game box score. Skip rather than compare a half line to a game.
+    if (/\b(1st|2nd|first|second)\s*(quarter|half|qtr)\b|\b(1q|2q|3q|4q|1h|2h)\b/.test(p)) return null
     const pts = +g.pts || 0, reb = +g.reb || 0, ast = +g.ast || 0
     const stl = +g.stl || 0, blk = +g.blk || 0
     const oreb = +g.oreb || 0, dreb = +g.dreb || 0
@@ -784,7 +1011,7 @@ function ppMapsFactor(p) {
 async function getGamelog(player, lg) {
   const sport = BDL_SPORTS[lg]
   if (!sport || !sport.supported) return { games: [] }
-  if (!bdlAvailable()) return { games: [] }
+  if (!bdlAvailable(lg)) return { games: [] }
   const cacheKey = `${lg}|${player.trim().toLowerCase()}`
   const cached = gamelogCache[cacheKey]
   if (cached && Date.now() - cached.ts < GAMELOG_TTL) return cached.data
@@ -827,7 +1054,7 @@ const W_EDGE = 0.35
 const W_AVAIL = 0.20
 // Minimum verifiable games before a prop can be scored. Esports gets a
 // slightly lower bar because series come less frequently than ball games.
-const MIN_GAMES = { MLB: 10, WNBA: 10, LOL: 8, CS2: 8 }
+const MIN_GAMES = { NBA: 10, MLB: 10, WNBA: 10, LOL: 8, CS2: 8 }
 function mean(a) { return a.length ? a.reduce((s, v) => s + v, 0) / a.length : 0 }
 function stdev(a) {
   if (a.length < 2) return 1
@@ -857,7 +1084,9 @@ function scoreProp(games, league, statLabel, L) {
   const baseline = older.length >= 8 ? mean(older) : seasonMean
   // Availability proxy: last logged game must be recent for this sport's cadence.
   const withDate = rows.find(r => r.date)
-  const staleDays = league === 'MLB' ? 4 : (league === 'WNBA' ? 7 : 14)
+  // NBA teams play every two days or so; a week without a logged game means
+  // injury, rest, or a role change, which is exactly what this should catch.
+  const staleDays = league === 'MLB' ? 4 : ((league === 'WNBA' || league === 'NBA') ? 7 : 14)
   let avail = 0.7 // rows without dates: neither credit nor kill it
   if (withDate) {
     const daysSince = (Date.now() - new Date(withDate.date).getTime()) / 86400000
@@ -905,16 +1134,15 @@ function scoreProp(games, league, statLabel, L) {
     goldEligible: !best.trap && best.edgeRaw > 0 && avail >= 0.7
   }
 }
-// The fix for AI direction contradicting the data. For MLB/WNBA picks with a
-// real sample, direction and confidence come from the scoring engine, not the
-// AI's blind guess. Picks with fewer than 10 verifiable games are left alone
-// (the card hides their chart anyway).
-const REAL_GROUND_LEAGUES = ['MLB', 'WNBA', 'LOL', 'CS2']
+// The fix for AI direction contradicting the data. For picks in a subscribed
+// real-data league with a real sample, direction and confidence come from the
+// scoring engine, not the AI's blind guess. Picks with fewer than 10
+// verifiable games are left alone (the card hides their chart anyway).
 async function groundPicks(picks) {
   if (!bdlAvailable()) return picks
   await Promise.all(picks.map(async p => {
     const lg = (p.league || '').toUpperCase()
-    if (!REAL_GROUND_LEAGUES.includes(lg)) return
+    if (!bdlAvailable(lg)) return
     try {
       const L = parseFloat(p.val)
       if (isNaN(L)) return
@@ -959,6 +1187,7 @@ async function mapLimit(items, limit, fn) {
 // card. AI-league picks are model-claimed confidence. This function is the
 // ONLY source of truth, used by the scanner, the AI fallback, and both gates.
 function goldFloorFor(lg) {
+  if (lg === 'NBA') return 82
   if (lg === 'WNBA') return 82
   if (lg === 'MLB') return 86
   if (lg === 'LOL' || lg === 'CS2') return 86
@@ -1011,7 +1240,7 @@ function buildRealPick(l, lg, s) {
 // fallback covers the league, same path NFL/NBA/NHL have always used.
 async function realScan(lines, league, floorPct, maxPerPlayer = 2, maxTotal = 20, requireGoldEligible = false) {
   const lg = league.toUpperCase()
-  if (!bdlAvailable()) return []
+  if (!bdlAvailable(lg)) return []
   const cands = (lines || []).filter(l =>
     (l.league || '').toUpperCase() === lg && l.name && l.stat && l.line != null &&
     (!l.oddsType || l.oddsType === 'standard') &&
@@ -1089,36 +1318,70 @@ const ANALYST_CTX_TTL = 30 * 60 * 1000
 async function buildAnalystContext() {
   if (!bdlAvailable()) return ''
   if (Date.now() - analystCtxCache.ts < ANALYST_CTX_TTL) return analystCtxCache.text
-  const today = new Date().toISOString().slice(0, 10)
-  const tomorrow = new Date(Date.now() + 86400000).toISOString().slice(0, 10)
+  // ET calendar days, not UTC: after 8 PM ET the UTC date is already
+  // tomorrow and tonight's late tips would never be fetched.
+  const today = etDate(0)
+  const tomorrow = etDate(1)
   const sections = []
-  for (const lg of ['MLB', 'WNBA']) {
+  // Sports with a schedule and injury feed, focus sport first.
+  const schedLeagues = ['NBA', 'MLB', 'WNBA']
+    .filter(lg => bdlAvailable(lg))
+    .sort((a, b) => leagueRank(a) - leagueRank(b))
+  for (const lg of schedLeagues) {
     const sport = BDL_SPORTS[lg]
-    const awayField = AWAY_FIELD[lg] || 'away_team'
+    const awayField = sport.awayField || 'away_team'
+    const teamAbbr = {}          // team id -> abbreviation, for injury rows
+    const playingTeams = new Set() // team ids with a game in the window
     try {
       const [g1, g2] = await Promise.all([
         bdlFetch(`https://api.balldontlie.io/${sport.path}/v1/games?dates[]=${today}`),
         bdlFetch(`https://api.balldontlie.io/${sport.path}/v1/games?dates[]=${tomorrow}`)
       ])
-      const games = [...(g1.data || []), ...(g2.data || [])]
-        .filter(g => g.date && new Date(g.date).getTime() > Date.now() - 6 * 3600000)
+      // Keep games that have not finished. Real start time when known
+      // (NBA datetime, MLB/WNBA full-timestamp date); a date-only row with no
+      // time is kept since its date is already today or tomorrow in ET.
+      const games = [...(g1.data || []), ...(g2.data || [])].filter(g => {
+        const t = gameStartMs(g)
+        return t == null || t > Date.now() - 6 * 3600000
+      })
+      games.forEach(g => {
+        ;[g.home_team, g[awayField]].forEach(t => {
+          if (t && t.id != null) {
+            teamAbbr[t.id] = t.abbreviation || t.name || ''
+            playingTeams.add(t.id)
+          }
+        })
+      })
       if (games.length) {
         sections.push(`${lg} SCHEDULE (verified):\n` + games.map(g => {
           const away = g[awayField] || {}
           const home = g.home_team || {}
-          return `- ${away.abbreviation || away.name || 'Away'} @ ${home.abbreviation || home.name || 'Home'} (${home.abbreviation || home.name} is HOME), ${g.date}`
+          const when = gameStartIso(g) || g.date || ''
+          return `- ${away.abbreviation || away.name || 'Away'} @ ${home.abbreviation || home.name || 'Home'} (${home.abbreviation || home.name} is HOME), ${when}`
         }).join('\n'))
       }
     } catch (e) { console.log(`${lg} schedule context skipped:`, e.message) }
     try {
       const inj = await bdlFetch(`https://api.balldontlie.io/${sport.path}/v1/player_injuries?per_page=100`)
-      const rows = (inj.data || []).slice(0, 80)
+      let rows = inj.data || []
+      // NBA injury rows carry team_id, not a team object. Map it to an
+      // abbreviation, and when the schedule loaded, keep only teams that
+      // actually play in the window: a full league injury list is mostly
+      // noise for tonight's board and burns prompt space.
+      const teamIdOf = r => (r.player && (r.player.team_id != null ? r.player.team_id : (r.player.team && r.player.team.id)))
+      if (playingTeams.size) {
+        const relevant = rows.filter(r => playingTeams.has(teamIdOf(r)))
+        if (relevant.length) rows = relevant
+      }
+      rows = rows.slice(0, 80)
       if (rows.length) {
         sections.push(`${lg} INJURY REPORT (verified):\n` + rows.map(r => {
           const pl = r.player || {}
-          const team = (pl.team && (pl.team.abbreviation || pl.team.name)) || ''
+          const tid = teamIdOf(r)
+          const team = (pl.team && (pl.team.abbreviation || pl.team.name)) || (tid != null ? teamAbbr[tid] : '') || ''
           const name = pl.first_name ? `${pl.first_name} ${pl.last_name}` : (pl.nickname || 'Unknown')
-          return `- ${name}${team ? ' (' + team + ')' : ''}: ${r.status || 'listed'}${r.description ? ', ' + r.description : ''}`
+          const back = r.return_date ? `, expected back ${r.return_date}` : ''
+          return `- ${name}${team ? ' (' + team + ')' : ''}: ${r.status || 'listed'}${r.description ? ', ' + r.description : ''}${back}`
         }).join('\n'))
       }
     } catch (e) { console.log(`${lg} injury context skipped:`, e.message) }
@@ -1129,8 +1392,8 @@ async function buildAnalystContext() {
 }
 // ===== GOLD AUTO-ANALYSIS =====
 // After the scoring engine selects gold candidates, a web-search pass checks
-// the game's reality for EVERY pick on the board, all leagues — football,
-// NBA, NHL, MLB, esports, all of it: opponent, injury/lineup status, anything
+// the game's reality for EVERY pick on the board, all leagues — NBA,
+// football, NHL, MLB, esports, all of it: opponent, injury/lineup status, anything
 // the game logs can't see. The board is split into chunks that run in
 // parallel so full coverage doesn't slow the load down. The model NEVER
 // re-rates picks itself. It returns a status per player and the SERVER
@@ -1148,6 +1411,7 @@ async function analyzeChunk(chunk, currentTime, contextText) {
     `- ${p.name} (${p.league}${p.team ? ' · ' + p.team : ''}): ${p.stat} ${p.dir === 'HIGHER' ? 'over' : 'under'} ${p.val}${p.date || p.time ? ` [game: ${[p.date, p.time].filter(Boolean).join(' ')}]` : ''}`
   ).join('\n')
   const hasFootball = chunk.some(p => isFootball(p.league))
+  const hasBasketball = chunk.some(p => isBasketball(p.league))
   const userMsg = `Current time: ${currentTime || new Date().toISOString()} ET
 These are the model-selected picks. Your job is a REAL scouting report on each one, not a rubber stamp.
 ${contextText ? `VERIFIED DATA already pulled from the live sports data feed. Treat this as ground truth and do NOT waste searches rediscovering it:
@@ -1156,15 +1420,16 @@ ${contextText}
 ${list}
 Work GAME BY GAME, not player by player: group the picks by the game they belong to (find each pick's opponent and who is home), then search ONCE per game for what only search can tell you: the latest injury report or posted lineup, confirmed starters, starting pitchers for MLB, and news from the last 24 hours. Prefer sources like ESPN, Rotowire, and team beat reporters. Base every claim on the verified data above or on something you actually found in a search result, never on memory.
 ${hasFootball ? `FOOTBALL picks (NFL and college) are usually days away, not tonight, and the injury report is the whole ballgame. For each football pick find: the player's official designation (Questionable, Doubtful, Out) and practice participation this week, the starting quarterback's status (a QB change flips every pass-catcher on that team), the opposing defense's recent results against this player's position, the point spread and the game script it implies (a big favorite leans on the run late, a big underdog throws late), and weather if the stadium is outdoors (wind hurts passing and kicking props). A Questionable tag or limited practice is CAUTION. Out, injured reserve, inactive, or suspended is OUT. No designation and full practice is CONFIRMED.
+` : ''}${hasBasketball ? `BASKETBALL picks (NBA first) live and die on minutes. For each basketball pick find: the player's status on the official injury report (NBA teams file it the day before and update it through the afternoon, and starting lineups are confirmed about 30 minutes before tip), any minutes restriction or return-from-injury ramp-up, whether either team is on the second night of a back-to-back (rest days and reduced minutes cluster there), which teammates are OUT and how that shifts usage, shots, and rebounds toward or away from this player, the opponent's defense and pace, and the point spread, because a lopsided spread means blowout risk and starters sitting the fourth quarter, which kills overs. Questionable, game-time decision, or a minutes restriction is CAUTION. Probable is fine. Out, suspended, or not with the team is OUT.
 ` : ''}For EACH pick, cover in your note:
 - teammates OUT or questionable and what that does to this player's role (an absent star usually means more usage, targets, shots, or at-bats for teammates)
 - opposing players OUT and whether the matchup this player faces got easier or harder because of it
-- matchup factors that matter: opposing defense vs position, spread and game script, and weather for football; opposing starting pitcher and handedness for MLB; pace and rest for basketball; home or away
+- matchup factors that matter: minutes outlook, pace, rest, opponent defense vs position, and blowout risk for basketball; opposing defense vs position, spread and game script, and weather for football; opposing starting pitcher and handedness for MLB; home or away
 - your read on whether the evidence supports the listed over/under side or challenges it
 Status rules, based only on what the verified data and your searches show:
 - "CONFIRMED": found evidence they are active, starting, or in the lineup with no injury designation
 - "NO_NEWS": found nothing negative, but could not positively confirm the lineup either. This is NORMAL for games whose lineups or final injury reports are not posted yet. No designation found = NO_NEWS, not CAUTION.
-- "CAUTION": an ACTUAL negative finding: questionable, doubtful, or day-to-day tag, limited practice, benched, snap or minutes concern, elite opposing defense or pitcher, weather risk
+- "CAUTION": an ACTUAL negative finding: questionable, doubtful, game-time decision, or day-to-day tag, minutes restriction, back-to-back rest risk, limited practice, benched, snap or minutes concern, elite opposing defense or pitcher, heavy blowout risk, weather risk
 - "OUT": ruled out, not in the lineup, suspended, or their team does not play in the next 36 hours (next 7 days for football)
 Respond with ONLY this JSON array as your final message, nothing before or after it, no markdown fences:
 [{"name":"exact player name from the list","status":"CONFIRMED","opponent":"opposing team name","venue":"home","note":"2-3 sentences: the full matchup read, absences on both sides and their effect, and why the evidence supports or challenges the listed side","related":"OPTIONAL 1 sentence: a real ripple effect worth knowing, like an absence boosting this player's role. Omit this field if you found nothing real."}]`
@@ -1175,7 +1440,7 @@ Respond with ONLY this JSON array as your final message, nothing before or after
       model: 'claude-sonnet-4-6',
       max_tokens: 4000,
       tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 8 }],
-      system: `You are a sports betting scout producing real matchup intelligence. Search game by game, not player by player, and lean on any verified schedule and injury data provided instead of re-searching it. For football the weekly injury report, practice participation, and quarterback status come first. Never state injury or lineup information you did not find in the provided data or an actual search result. Output ONLY the requested JSON array as your final answer, nothing else.`,
+      system: `You are a sports betting scout producing real matchup intelligence. Search game by game, not player by player, and lean on any verified schedule and injury data provided instead of re-searching it. For basketball the injury report, minutes outlook, and back-to-back rest come first. For football the weekly injury report, practice participation, and quarterback status come first. Never state injury or lineup information you did not find in the provided data or an actual search result. Output ONLY the requested JSON array as your final answer, nothing else.`,
       messages
     }, 3, true)
     if (!data || !data.content) throw new Error((data && data.error && data.error.message) || 'No content')
@@ -1293,10 +1558,10 @@ function buildPairs(elig, maxPairs = 5) {
   return pairs.slice(0, maxPairs).map(({ rank, ...p }) => p)
 }
 // Which non-real leagues get AI coverage: every league on the live slate
-// with at least 5 lines, football first, then deepest slates, capped at 8
-// so a busy day can't fan out forever. Football leagues sort to the front
-// so the cap can never squeeze them out. A requested league always gets
-// covered on its tab.
+// with at least 5 lines, focus sport first, football next, then deepest
+// slates, capped at 8 so a busy day can't fan out forever. Focus and
+// football sort to the front so the cap can never squeeze them out. A
+// requested league always gets covered on its tab.
 function pickAiLeagues(rawLines, reqLeague, REAL) {
   if (reqLeague) return REAL.includes(reqLeague) ? [] : [reqLeague]
   const counts = {}
@@ -1308,8 +1573,8 @@ function pickAiLeagues(rawLines, reqLeague, REAL) {
   return Object.entries(counts)
     .filter(([, n]) => n >= 5)
     .sort((a, b) => {
-      const fa = isFootball(a[0]), fb = isFootball(b[0])
-      if (fa !== fb) return fa ? -1 : 1
+      const ra = leagueRank(a[0]), rb = leagueRank(b[0])
+      if (ra !== rb) return ra - rb
       return b[1] - a[1]
     })
     .slice(0, 8)
@@ -1479,22 +1744,40 @@ const FOOTBALL_PICK_RULES = `FOOTBALL RULES (NFL and college), these outrank eve
 - The starting quarterback decides every pass catcher on that team. If the QB situation is unsettled, lower your confidence on his receivers and tight ends.
 - Backups, rookies with unclear roles, and committee running backs are not high-confidence plays no matter how good the matchup looks.
 - Football lines move fast and books shade them toward recent box scores. A line cleared in nearly every recent game is usually already priced in.`
-// AI pick generation for sports WITHOUT real data. While the BDL feed is off
-// this is every league on the slate, football first.
+// Basketball-specific pick rules, appended whenever the league is NBA, WNBA,
+// or college basketball. Basketball props are a minutes question first:
+// a player's stat line scales with his minutes, and minutes move with
+// injuries, rest, foul trouble, and blowouts.
+const BASKETBALL_PICK_RULES = `BASKETBALL RULES (NBA first, also WNBA and college), these outrank everything else for basketball lines:
+- Minutes drive everything. Weigh the player's recent minutes, his usage when key teammates are out, and whether he is on a minutes restriction or ramping back from injury.
+- Injury news reshapes a board fast. When a star is OUT, his teammates' usage, shots, and assists go up. When a star returns, role players go back down. Weigh who is in and who is out for both teams.
+- Back-to-backs matter: the second night brings rest days for veterans and lighter minutes. Lower confidence on overs for players on the second leg.
+- Blowout risk is real: a big point spread means starters may sit the fourth quarter. Favor unders or lower confidence on overs for starters on heavy favorites and in likely lopsided games.
+- Pace and matchup: fast-paced games create more possessions and more counting stats. Weigh how the opponent defends this player's position.
+- Prefer volume props with stable minutes (points, rebounds, assists, combos, made threes for high-volume shooters) over steals, blocks, and turnovers, which swing on a few plays.
+- Early in the season, last season's role may not match this season's. Weight recent games, roster changes, and new teams heavily.
+- Basketball lines move with the injury report. A line cleared in nearly every recent game is usually already priced in.`
+// AI pick generation. Covers every league without an active real-data feed,
+// focus sport first.
 async function aiPicks(currentTime, lines, league, rawLines, mode, pickCount) {
   if (!lines.length) return []
   const linesText = lines.map(l =>
     `${l.name} (${l.league} · ${l.team}) | ${l.stat}: ${l.line} | ${l.date} ${l.start_time}`
   ).join('\n')
   const gold = mode === 'gold'
-  const football = isFootball(league)
   const spreadRule = league
     ? (gold ? `All picks must be from ${league}.` : `All picks must be from ${league}. Select the best ${pickCount} picks from the lines above.`)
     : (gold
-      ? `Prioritize NFL and college football first while the season is on, then NBA, NHL, esports. Spread across AT LEAST 2 different leagues. Max 2 picks per league.`
-      : `Select the best ${pickCount} picks. Prioritize NFL and college football first, then NBA, NHL, esports. Spread across AT LEAST 3 different sports or leagues. Max 2 picks from the same league.`)
-  const sportRules = football ? `\n${FOOTBALL_PICK_RULES}\n` : ''
-  const varietyRule = `- Vary stat categories across the board. Football: receptions, rush attempts, receiving yards, rushing yards, pass completions, pass attempts, kicking points, tackles. Basketball: 3-pointers made, rebounds, assists, shot attempts, steals, blocks. Hockey: shots on goal, points. Esports: kills, assists, maps-window totals`
+      ? `${PRIORITY_PHRASE}. Spread across AT LEAST 2 different leagues. Max 2 picks per league.`
+      : `Select the best ${pickCount} picks. ${PRIORITY_PHRASE}. Spread across AT LEAST 3 different sports or leagues. Max 2 picks from the same league.`)
+  // Sport rules: the specific league's rules on a league tab, and on the ALL
+  // board the rules for every sport family actually present in the lines.
+  const families = league ? [league] : [...new Set(lines.map(l => (l.league || '').toUpperCase()))]
+  const ruleBlocks = []
+  if (families.some(isBasketball)) ruleBlocks.push(BASKETBALL_PICK_RULES)
+  if (families.some(isFootball)) ruleBlocks.push(FOOTBALL_PICK_RULES)
+  const sportRules = ruleBlocks.length ? `\n${ruleBlocks.join('\n\n')}\n` : ''
+  const varietyRule = `- Vary stat categories across the board. Basketball: points, rebounds, assists, combos, 3-pointers made, shot attempts. Football: receptions, rush attempts, receiving yards, rushing yards, pass completions, pass attempts, kicking points, tackles. Hockey: shots on goal, points. Esports: kills, assists, maps-window totals`
   const recordRule = `- "record" is a short honest note on recent form in words. Only state a game count like "cleared this line in most of his last several games" if you are confident it is accurate. Never invent exact numbers you cannot stand behind`
   const goldBody = `Current time: ${currentTime} ET
 These are REAL live PrizePicks lines. Find the highest confidence picks at 82%+ confidence only. Copy line numbers exactly — never change them:
@@ -1502,7 +1785,7 @@ ${spreadRule}
 ${linesText}
 ${sportRules}Find your top picks where you are genuinely 82%+ confident based on recent player performance, role, and matchup. Only assign 82%+ confidence when genuinely warranted. Be suspicious of hot streaks: a line cleared in nearly every recent game is usually already priced in.
 Output ONLY this JSON array:
-[{"id":1,"name":"exact player name","meta":"League · Team","stat":"exact stat","val":"exact line number","dir":"HIGHER","conf":92,"sport":"NFL","league":"NFL","initials":"PN","time":"exact time","date":"exact date","bull":"specific reason why this hits","bear":"real risk factor","record":"short note on recent form","cats":[{"n":"stat name","p":92}]}]
+[{"id":1,"name":"exact player name","meta":"League · Team","stat":"exact stat","val":"exact line number","dir":"HIGHER","conf":92,"sport":"NBA","league":"NBA","initials":"PN","time":"exact time","date":"exact date","bull":"specific reason why this hits","bear":"real risk factor","record":"short note on recent form","cats":[{"n":"stat name","p":92}]}]
 Rules:
 - Copy line numbers EXACTLY — never change them
 - conf must be 82 or above — never assign below 82 on this endpoint
@@ -1517,7 +1800,7 @@ ${linesText}
 ${spreadRule}
 ${sportRules}For each pick, determine direction (HIGHER or LOWER) based on concrete statistical evidence. Once you decide a direction, commit to it.
 Output ONLY this JSON array:
-[{"id":1,"name":"exact player name","meta":"League · Team","stat":"exact stat","val":"exact line number","dir":"HIGHER","conf":88,"sport":"NFL","league":"NFL","initials":"PN","time":"exact time","date":"exact date","bull":"specific reason","bear":"real risk","record":"short note on recent form","cats":[{"n":"stat","p":88}]}]
+[{"id":1,"name":"exact player name","meta":"League · Team","stat":"exact stat","val":"exact line number","dir":"HIGHER","conf":88,"sport":"NBA","league":"NBA","initials":"PN","time":"exact time","date":"exact date","bull":"specific reason","bear":"real risk","record":"short note on recent form","cats":[{"n":"stat","p":88}]}]
 Rules:
 - Copy the line number EXACTLY — never change it
 - dir must be HIGHER or LOWER based on clear statistical evidence
@@ -1552,8 +1835,10 @@ ${recordRule}
 // Per-league line cap and pick count for the AI generator on the ALL board.
 // Football is the main event, so it gets the deeper cut of the slate and the
 // full pick count; everything else keeps the tighter caps that hold cost down.
-function aiLineCapFor(lg) { return isFootball(lg) ? 100 : 60 }
-function aiPickCountFor(lg, pickCount) { return isFootball(lg) ? pickCount : Math.min(pickCount, 4) }
+// The focus sport and football get the full line budget and pick count;
+// everything else is capped so a busy day can't balloon the prompt.
+function aiLineCapFor(lg) { return (isFocus(lg) || isFootball(lg)) ? 100 : 60 }
+function aiPickCountFor(lg, pickCount) { return (isFocus(lg) || isFootball(lg)) ? pickCount : Math.min(pickCount, 4) }
 // Tonight picks are cached per league server-side. With the board now public,
 // every anonymous visitor would otherwise fire the full per-league AI fan-out
 // on a cold load, burning Anthropic credits with zero accounts created. A
@@ -1564,10 +1849,10 @@ const PICKS_CACHE_TTL = 45 * 60 * 1000
 async function buildPicksBoard({ currentTime, rawLines, league, count, picksKey }) {
     const lines = sortLines(rawLines, league)
     const pickCount = Math.min(count || 6, 10, lines.length)
-    console.log('Analyzing', lines?.length, 'lines for league:', league || 'ALL', bdlAvailable() ? '' : '(BDL off, AI for every league)')
+    const REAL = realDataLeagues()
+    console.log('Analyzing', lines?.length, 'lines for league:', league || 'ALL', REAL.length ? `(real data: ${REAL.join(', ')})` : '(BDL off, AI for every league)')
     if (!lines || lines.length === 0) throw new Error('No lines provided')
     const reqLeague = league ? league.toUpperCase() : null
-    const REAL = ['MLB', 'WNBA', 'LOL', 'CS2']
     let picks = []
     // Real-data scanner for every BDL-backed league, run in parallel (lower
     // floor than gold so the board has range — traps show up here with their
@@ -1578,16 +1863,17 @@ async function buildPicksBoard({ currentTime, rawLines, league, count, picksKey 
     const scanResults = await Promise.all(scanLgs.map(async lg => {
       const scanned = await realScan(rawLines, lg, 72, 2, 15, false)
       if (scanned.length > 0) return scanned
-      const lgLines = rawLines.filter(l => (l.league || '').toUpperCase() === lg)
+      const lgLines = rawLines.filter(l => (l.league || '').toUpperCase() === lg).slice(0, aiLineCapFor(lg))
       if (!lgLines.length) return []
       const lgAI = await aiPicks(currentTime, lgLines, lg, rawLines, 'tonight', pickCount)
       console.log(lg, 'real scanner empty — AI fallback, got', lgAI.length, 'picks')
       return lgAI
     }))
     scanResults.forEach(arr => { picks = picks.concat(arr) })
-    // AI per league for EVERY other sport with live lines (football, NBA, NHL,
-    // soccer, tennis, golf, MMA, whatever the slate has), run in parallel.
-    // Leagues need at least 5 lines to qualify, football always first.
+    // AI per league for EVERY other sport with live lines (NBA when its feed
+    // is off, football, NHL, soccer, tennis, golf, MMA, whatever the slate
+    // has), run in parallel. Leagues need at least 5 lines to qualify, focus
+    // sport always first.
     const aiLeagues = pickAiLeagues(rawLines, reqLeague, REAL)
     const aiResults = []
     await mapLimit(aiLeagues, 3, async lg => {
@@ -1596,10 +1882,11 @@ async function buildPicksBoard({ currentTime, rawLines, league, count, picksKey 
       aiResults.push(...arr)
     })
     picks = picks.concat(aiResults)
-    // Football leads the ALL board, then everything by confidence.
-    picks.sort(footballFirst)
+    // Focus sport leads the ALL board, then football, then everything by
+    // confidence.
+    picks.sort(focusFirst)
     picks = picks.slice(0, 40)
-    console.log('Got', picks.length, 'picks (', picks.filter(p => isFootball(p.league)).length, 'football,', picks.filter(p => REAL.includes(p.league)).length, 'real,', picks.filter(p => p.trapRisk).length, 'flagged trap )')
+    console.log('Got', picks.length, 'picks (', picks.filter(p => isFocus(p.league)).length, SEASON_FOCUS_LABEL + ',', picks.filter(p => isFootball(p.league)).length, 'football,', picks.filter(p => REAL.includes(p.league)).length, 'real,', picks.filter(p => p.trapRisk).length, 'flagged trap )')
     if (picks.length > 0) picksCache[picksKey] = { data: { picks }, ts: Date.now() }
     return { picks }
 }
@@ -1627,10 +1914,10 @@ app.post('/picks', async (req, res) => {
 })
 async function buildGoldBoard({ currentTime, rawLines, league, goldKey }) {
     const lines = sortLines(rawLines, league)
-    console.log('Finding gold from', lines?.length, 'lines for league:', league || 'ALL', bdlAvailable() ? '' : '(BDL off, AI for every league)')
+    const REAL = realDataLeagues()
+    console.log('Finding gold from', lines?.length, 'lines for league:', league || 'ALL', REAL.length ? `(real data: ${REAL.join(', ')})` : '(BDL off, AI for every league)')
     if (!lines || lines.length === 0) throw new Error('No lines provided')
     const reqLeague = league ? league.toUpperCase() : null
-    const REAL = ['MLB', 'WNBA', 'LOL', 'CS2']
     let picks = []
     // Gold from real data: strongest verified plays, gold-eligible only. That
     // means no trap flags, projection must agree with the streak side, and the
@@ -1644,7 +1931,7 @@ async function buildGoldBoard({ currentTime, rawLines, league, goldKey }) {
       const floor = goldFloorFor(lg)
       const scanned = await realScan(rawLines, lg, floor, 2, 20, true)
       if (scanned.length > 0) return scanned
-      const lgLines = rawLines.filter(l => (l.league || '').toUpperCase() === lg)
+      const lgLines = rawLines.filter(l => (l.league || '').toUpperCase() === lg).slice(0, aiLineCapFor(lg))
       if (!lgLines.length) return []
       const lgAI = await aiPicks(currentTime, lgLines, lg, rawLines, 'gold')
       console.log(lg, 'real scanner empty — AI gold fallback, got', lgAI.length, 'picks')
@@ -1652,7 +1939,7 @@ async function buildGoldBoard({ currentTime, rawLines, league, goldKey }) {
     }))
     scanResults.forEach(arr => { picks = picks.concat(arr) })
     // AI gold per league for EVERY other sport with live lines, in parallel,
-    // each gated by its gold floor. Football first, every sport gets scanned.
+    // each gated by its gold floor. Focus sport first, every sport gets scanned.
     const aiLeagues = pickAiLeagues(rawLines, reqLeague, REAL)
     const aiResults = []
     await mapLimit(aiLeagues, 3, async lg => {
@@ -1667,11 +1954,11 @@ async function buildGoldBoard({ currentTime, rawLines, league, goldKey }) {
     // Final gate: every pick must clear its floor AND carry no trap flag,
     // regardless of how it got here.
     picks = picks.filter(p => p.conf >= goldFloorFor((p.league || '').toUpperCase()) && !p.trapRisk)
-    // Football leads, so the analyst pass (top picks only) spends its
-    // searches on football games first.
-    picks.sort(footballFirst)
+    // Focus sport leads, so the analyst pass (top picks only) spends its
+    // searches on those games first.
+    picks.sort(focusFirst)
     picks = picks.slice(0, 30)
-    console.log('Got', picks.length, 'gold picks (', picks.filter(p => isFootball(p.league)).length, 'football,', picks.filter(p => REAL.includes(p.league)).length, 'real ) — analyzing status')
+    console.log('Got', picks.length, 'gold picks (', picks.filter(p => isFocus(p.league)).length, SEASON_FOCUS_LABEL + ',', picks.filter(p => isFootball(p.league)).length, 'football,', picks.filter(p => REAL.includes(p.league)).length, 'real ) — analyzing status')
     // Stage 2: auto-verify the game's reality (opponent, injuries, lineups),
     // then re-rate. OUT picks are removed, real negative findings dock 10,
     // clean checks (CONFIRMED / NO_NEWS) keep their rating. The analyst is a
@@ -1686,14 +1973,14 @@ async function buildGoldBoard({ currentTime, rawLines, league, goldKey }) {
     // The floor is re-enforced AFTER re-rating: a pick docked for bad news
     // that falls under its league floor does not belong on the gold board.
     picks = picks.filter(p => p.conf >= goldFloorFor((p.league || '').toUpperCase()))
-    picks.sort(footballFirst)
+    picks.sort(focusFirst)
     // Never-empty valve: if nothing cleared every gate but real candidates
     // exist (All-Star breaks and thin slates happen), surface the best
     // non-trap ones honestly labeled NEAR GOLD instead of a blank board.
     if (picks.length === 0 && candidates.length > 0) {
       picks = candidates
         .filter(p => !p.trapRisk)
-        .sort(footballFirst)
+        .sort(focusFirst)
         .slice(0, 5)
         .map(p => ({ ...p, nearGold: true, meta: `${p.meta} · NEAR GOLD`, analysisStatus: p.analysisStatus || 'UNANALYZED' }))
       console.log('Never-empty valve engaged:', picks.length, 'NEAR GOLD picks from', candidates.length, 'candidates')
@@ -1775,7 +2062,7 @@ app.post('/chat', async (req, res) => {
           model: 'claude-sonnet-4-6',
           max_tokens: 4000,
           tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 5 }],
-          system: `You are the Trip Predicts AI analyst for PrizePicks. You have real live prop lines provided to you. Always use the exact line numbers from the data — never change them. It is football season: prioritize NFL and college football first, then NBA, NHL, MLB, and esports. Only recommend WNBA or niche sports if explicitly asked. For football, weigh role and volume (snap share, targets, carries), the opposing defense against that position, the spread and game script, the injury report and quarterback status, and weather for outdoor games. Look for clear statistical edges — recent form, matchup advantages, usage rates, pace of play. Be suspicious of hot streaks: a player who has cleared a line in nearly every recent game usually has a line that was already raised to match the streak, which makes it a regression trap, not a lock. Only recommend picks from games on the current board. Never recommend the same player twice. Spread picks across multiple sports — never more than 2 from the same league unless the user asks for one sport. When recommending direction, commit to it based on data. Tiers: Regular below 75%, High 75-89%, GOLD 90%+. Never use em dashes. Bold key info with **text**.`,
+          system: `You are the Trip Predicts AI analyst for PrizePicks. You have real live prop lines provided to you. Always use the exact line numbers from the data — never change them. It is ${SEASON_FOCUS_LABEL} season: ${PRIORITY_PHRASE}. Only recommend niche sports if explicitly asked. For basketball, minutes drive everything: weigh recent minutes, who is out on both teams and how that shifts usage, back-to-backs and rest, pace, and blowout risk from the spread. For football, weigh role and volume (snap share, targets, carries), the opposing defense against that position, the spread and game script, the injury report and quarterback status, and weather for outdoor games. Look for clear statistical edges — recent form, matchup advantages, usage rates, pace of play. Be suspicious of hot streaks: a player who has cleared a line in nearly every recent game usually has a line that was already raised to match the streak, which makes it a regression trap, not a lock. Only recommend picks from games on the current board. Never recommend the same player twice. Spread picks across multiple sports — never more than 2 from the same league unless the user asks for one sport. When recommending direction, commit to it based on data. Tiers: Regular below 75%, High 75-89%, GOLD 90%+. Never use em dashes. Bold key info with **text**.`,
           messages: current
       }, 3, true)
       const data = res2ok
@@ -1871,7 +2158,7 @@ ${combinedPct != null
 ${trapLegs.length ? `\nThe following legs are flagged TRAP RISK and the verdict cannot be "Strong" while any of them remain: ${trapLegs.join(', ')}.` : ''}
 ${contextText ? `VERIFIED DATA already pulled from the live sports data feed (schedule, home teams, injury report). Treat it as ground truth and do not waste searches rediscovering it:
 ${contextText}
-` : ''}Your job is a REAL scouting report on each leg, the kind a sharp bettor wants before locking a slip, not a status check. Research each leg's GAME, then answer the specific questions that decide whether THIS prop hits. Prefer ESPN, Rotowire, Pro Football Reference, PFF, Baseball Savant, FanGraphs, and team beat reporters. Every claim must come from the verified data above or an actual search result, never from memory. If something cannot be found, say so plainly.
+` : ''}Your job is a REAL scouting report on each leg, the kind a sharp bettor wants before locking a slip, not a status check. Research each leg's GAME, then answer the specific questions that decide whether THIS prop hits. Prefer ESPN, Rotowire, the official NBA injury report, Basketball Reference, Pro Football Reference, PFF, Baseball Savant, FanGraphs, and team beat reporters. Every claim must come from the verified data above or an actual search result, never from memory. If something cannot be found, say so plainly.
 ${hasFootball ? `FOOTBALL legs (NFL and college), always cover:
 - the player's official injury designation and practice participation this week, and the starting quarterback's status. For a pass catcher the QB is the single most important fact on the card
 - role and volume: snap share, target share or carries, red zone usage, and any teammate absence that shifts volume toward or away from this player
@@ -1883,13 +2170,18 @@ ${hasFootball ? `FOOTBALL legs (NFL and college), always cover:
 - lineup spot (top of the order means more plate appearances), recent form, home or away, and park or weather factors when they matter (wind, Coors, a pitcher's park)
 - the bullpen only if it materially changes the outlook (a bullpen game, or a lockdown closer against a late-inning prop)
 MLB PITCHER legs, cover: the opposing lineup's strength and strikeout tendency against his handedness, his recent pitch counts and how deep he has been going, and his recent results.
-BASKETBALL legs (NBA, WNBA), cover: the opponent and how they defend this player's position, pace, rest (back-to-back or not), teammates OUT and what that does to this player's usage and minutes, the recent minutes trend, home or away.
+BASKETBALL legs (NBA, WNBA, college), always cover:
+- the player's status on the official injury report and any minutes restriction. Minutes are the single most important fact on a basketball card
+- teammates OUT and what that does to this player's usage, shots, and minutes, and opponents OUT that make the matchup easier or harder
+- rest: is either team on the second night of a back-to-back
+- the opponent's defense against this position and the pace of the matchup
+- the point spread and blowout risk (starters sit the fourth quarter of lopsided games, which kills overs), home or away
 HOCKEY legs, cover: line and power play deployment, the opposing goalie and team defense, recent shot volume.
 ESPORTS legs, cover: opponent strength, recent series form, roster changes, and the map count of the series.
 For EACH leg, end with a plain read: does the evidence SUPPORT the listed over/under side, is it NEUTRAL, or does it CHALLENGE it, and the single biggest reason why. The verdict cannot be "Strong" if any leg is CHALLENGED or flagged TRAP RISK.
 Current status matters too: state injury or lineup information only when the verified data or a search result shows it. If you cannot confirm, say "no current lineup confirmation found" instead of guessing.
 After researching all ${picks.length} legs, respond with ONLY this JSON object as your final message, nothing before or after it, no markdown fences:
-{"verdict":"Strong or Moderate or Risky","summary":"2-3 sentences on the overall parlay, referencing the combined rate if one was given and naming the weakest leg","legs":[{"name":"player name","edge":"SUPPORTS or NEUTRAL or CHALLENGES","note":"3-4 sentences: the matchup specifics above (for football always state the injury designation and QB status, for MLB hitters always name the starting pitcher with his handedness and quality), current status, and the biggest reason for your read"}]}`
+{"verdict":"Strong or Moderate or Risky","summary":"2-3 sentences on the overall parlay, referencing the combined rate if one was given and naming the weakest leg","legs":[{"name":"player name","edge":"SUPPORTS or NEUTRAL or CHALLENGES","note":"3-4 sentences: the matchup specifics above (for basketball always state the injury report status and minutes outlook, for football always state the injury designation and QB status, for MLB hitters always name the starting pitcher with his handedness and quality), current status, and the biggest reason for your read"}]}`
     let parsed = null
     try {
       let messages = [{ role: 'user', content: userMsg }]
@@ -1899,7 +2191,7 @@ After researching all ${picks.length} legs, respond with ONLY this JSON object a
           model: 'claude-sonnet-4-6',
           max_tokens: 3000,
           tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 10 }],
-          system: `You are a sharp sports betting scout producing matchup intelligence for a parlay. For every football leg the injury designation, practice status, and starting quarterback are mandatory. For every MLB hitter leg the opposing starting pitcher, his handedness, and his quality are mandatory. Lean on any verified schedule and injury data provided instead of re-searching it. Never state injury, lineup, or pitcher information you did not find in the provided data or an actual search result. Output ONLY the requested JSON as your final answer, nothing else.`,
+          system: `You are a sharp sports betting scout producing matchup intelligence for a parlay. For every basketball leg the injury report status and minutes outlook are mandatory. For every football leg the injury designation, practice status, and starting quarterback are mandatory. For every MLB hitter leg the opposing starting pitcher, his handedness, and his quality are mandatory. Lean on any verified schedule and injury data provided instead of re-searching it. Never state injury, lineup, or pitcher information you did not find in the provided data or an actual search result. Output ONLY the requested JSON as your final answer, nothing else.`,
           messages
         }, 3, true)
         if (!data || !data.content) throw new Error((data && data.error && data.error.message) || 'No content from AI')
@@ -1941,14 +2233,17 @@ const PORT = process.env.PORT || 8080
 // each game, the BEST available price on each side across every book is
 // used, and implied win probability is computed directly from that real
 // number, never a model guess standing in for what the market already
-// prices. MLB games key the opponent under away_team, WNBA under
-// visitor_team, confirmed against BALLDONTLIE's schema earlier in this build,
-// same trap as the matchup work before this.
-// While the BDL feed is off this tab has no odds source and returns an
+// prices. MLB games key the opponent under away_team, NBA and WNBA under
+// visitor_team (each sport's awayField in BDL_SPORTS), confirmed against
+// BALLDONTLIE's schema.
+// Odds need the GOAT tier for that sport. Covered sports are the subscribed
+// ones that have a moneyline market; while none are live this tab returns an
 // empty board with a plain notice instead of a 502.
-const MONEYLINE_SPORTS = ['MLB', 'WNBA']
-const AWAY_FIELD = { MLB: 'away_team', WNBA: 'visitor_team' }
-const MONEYLINES_PAUSED_NOTICE = 'Moneylines are paused for now. The live odds feed is not active this season, so there are no games to show here yet.'
+const MONEYLINE_CAPABLE = ['NBA', 'MLB', 'WNBA']
+function moneylineSports() {
+  return MONEYLINE_CAPABLE.filter(lg => bdlFeatureAvailable(lg, 'odds')).sort((a, b) => leagueRank(a) - leagueRank(b))
+}
+const MONEYLINES_PAUSED_NOTICE = 'Moneylines are paused for now. The live odds feed is not active, so there are no games to show here yet.'
 // A side is flagged VALUE when its best available price pays at least this
 // much more than the no-vig market consensus says it should. 1.5 percentage
 // points is a meaningful, findable edge; anything smaller is noise inside
@@ -1969,18 +2264,20 @@ function bestOdds(oddsList, key) {
 async function fetchMoneylines(lg) {
   const sport = BDL_SPORTS[lg]
   if (!sport) return []
-  const awayField = AWAY_FIELD[lg] || 'away_team'
-  const today = new Date().toISOString().slice(0, 10)
-  const tomorrow = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
+  const awayField = sport.awayField || 'away_team'
+  // ET calendar days so tonight's late tips are never skipped after 8 PM ET.
+  const today = etDate(0)
+  const tomorrow = etDate(1)
+  // Odds path version is per sport: MLB and WNBA are v1, NBA is v2. Both
+  // verified against BALLDONTLIE's docs and its own sportsbook example. The
+  // dead-subscription 401 once masked a wrong path for weeks because auth
+  // fails before path resolution, so this is set explicitly per sport.
+  const ov = sport.oddsVersion || 'v1'
   const [gamesToday, gamesTomorrow, oddsToday, oddsTomorrow] = await Promise.all([
     bdlFetch(`https://api.balldontlie.io/${sport.path}/v1/games?dates[]=${today}`),
     bdlFetch(`https://api.balldontlie.io/${sport.path}/v1/games?dates[]=${tomorrow}`),
-    // v1, NOT v2. Verified against BDL's own OpenAPI spec and docs for both
-    // MLB and WNBA. The v2 path came from an NBA-specific example (NBA really
-    // is v2) and was wrongly generalized; the dead-subscription 401 masked
-    // the wrong path for weeks because auth failed before path resolution.
-    bdlFetch(`https://api.balldontlie.io/${sport.path}/v1/odds?dates[]=${today}`),
-    bdlFetch(`https://api.balldontlie.io/${sport.path}/v1/odds?dates[]=${tomorrow}`)
+    bdlFetch(`https://api.balldontlie.io/${sport.path}/${ov}/odds?dates[]=${today}`),
+    bdlFetch(`https://api.balldontlie.io/${sport.path}/${ov}/odds?dates[]=${tomorrow}`)
   ])
   const games = {}
   ;[...(gamesToday.data || []), ...(gamesTomorrow.data || [])].forEach(g => { games[g.id] = g })
@@ -1995,8 +2292,11 @@ async function fetchMoneylines(lg) {
     // Pregame only. A game that already started carries live or closing odds
     // (-6000, -10000 style numbers on a decided game), which look like data
     // but mean nothing for picking. This is why finished games from the
-    // UTC-today window were littering the board with absurd lines.
-    if (!game.date || new Date(game.date).getTime() <= Date.now()) continue
+    // UTC-today window were littering the board with absurd lines. The real
+    // tip time is used: NBA's `date` is date-only and reads as midnight UTC,
+    // which put every NBA game "in the past" before it tipped.
+    const startMs = gameStartMs(game)
+    if (startMs == null || startMs <= Date.now()) continue
     const home = bestOdds(oddsList, 'moneyline_home_odds')
     const away = bestOdds(oddsList, 'moneyline_away_odds')
     if (!home || !away) continue
@@ -2043,7 +2343,8 @@ async function fetchMoneylines(lg) {
       id: `ml-${lg}-${gameId}`,
       league: lg,
       gameId,
-      date: game.date || null,
+      // Real start time, so the card shows the actual tip, not midnight.
+      date: gameStartIso(game),
       homeTeam: homeTeam.full_name || homeTeam.name || 'Home',
       homeAbbr: homeTeam.abbreviation || null,
       awayTeam: awayTeam.full_name || awayTeam.name || 'Away',
@@ -2085,7 +2386,7 @@ async function analyzeMoneylineChunk(chunk, currentTime) {
   const userMsg = `Current time: ${currentTime || new Date().toISOString()} ET
 These are upcoming games with REAL live moneyline odds already pulled from the market. The odds and implied probabilities listed are already correct, real numbers, not your job to guess, restate, or re-price them.
 ${list}
-For EACH game, search for what actually matters to the outcome: starting pitchers (for MLB), key injuries or absences, and recent team form (last 5-10 games). Write 1-2 sentences of real reasoning grounded in what you actually find. If you can't confirm something (like today's starting pitcher), say so plainly rather than guessing. Do not state your own "pick" or a different probability, your job is to explain the real matchup, not re-price it. If you find something that genuinely challenges the favorite (an injury to a key player, a bullpen game instead of the usual starter), flag it plainly in riskFlag.
+For EACH game, search for what actually matters to the outcome: key injuries and absences on both sides, rest (an NBA team on the second night of a back-to-back often rests starters), starting pitchers for MLB, and recent team form (last 5-10 games). Write 1-2 sentences of real reasoning grounded in what you actually find. If you can't confirm something (like a star's status or today's starting pitcher), say so plainly rather than guessing. Do not state your own "pick" or a different probability, your job is to explain the real matchup, not re-price it. If you find something that genuinely challenges the favorite (a star OUT or resting, a back-to-back, a bullpen game instead of the usual starter), flag it plainly in riskFlag.
 Respond with ONLY this JSON array as your final message, nothing before or after it, no markdown fences:
 [{"id":"exact id from the list above","note":"1-2 sentences of real reasoning grounded in search","riskFlag":"short phrase only if something material challenges the favorite, otherwise omit this field"}]`
   let messages = [{ role: 'user', content: userMsg }]
@@ -2137,13 +2438,14 @@ const MONEYLINES_CACHE_TTL = 60 * 60 * 1000
 async function buildMoneylinesBoard({ reqLeague, cacheKey, currentTime }) {
     // No odds feed, no board. A clean empty payload with a notice, cached
     // for the normal window so the tab costs nothing while it is paused.
-    if (!bdlAvailable()) {
+    const ML_SPORTS = moneylineSports()
+    if (!ML_SPORTS.length) {
       console.log('Moneylines: BDL feed off, serving paused notice')
       const paused = { games: [], paused: true, notice: MONEYLINES_PAUSED_NOTICE }
       moneylinesCache[cacheKey] = { data: paused, ts: Date.now() }
       return { code: 200, body: paused }
     }
-    const sports = reqLeague ? (MONEYLINE_SPORTS.includes(reqLeague) ? [reqLeague] : []) : MONEYLINE_SPORTS
+    const sports = reqLeague ? (ML_SPORTS.includes(reqLeague) ? [reqLeague] : []) : ML_SPORTS
     const fetchErrors = []
     const results = await Promise.all(sports.map(lg =>
       fetchMoneylines(lg).catch(e => {
@@ -2169,7 +2471,7 @@ async function buildMoneylinesBoard({ reqLeague, cacheKey, currentTime }) {
     // otherwise and those need very different next steps.
     if (games.length === 0 && fetchErrors.length > 0 && fetchErrors.length === sports.length) {
       console.error('Moneylines: all leagues failed —', fetchErrors.join(' | '))
-      if (!bdlAvailable()) {
+      if (!moneylineSports().length) {
         const paused = { games: [], paused: true, notice: MONEYLINES_PAUSED_NOTICE }
         moneylinesCache[cacheKey] = { data: paused, ts: Date.now() }
         return { code: 200, body: paused }

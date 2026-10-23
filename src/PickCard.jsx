@@ -1,9 +1,11 @@
 import React, { useState, useEffect, useMemo } from 'react'
+import { getFeedStatus } from './feed'
 
 const SERVER = 'https://trippredicts-production-cfad.up.railway.app'
 
-// Sports with real game-by-game data wired in (BALLDONTLIE).
-const REAL_DATA_LEAGUES = ['MLB', 'WNBA', 'LOL', 'CS2']
+// Leagues with real game-by-game data come from the server's /feed-status
+// (subscribed BALLDONTLIE sports that are live right now), so a card never
+// fetches or claims real data while that feed is off.
 
 // Never show a real-data chart on a tiny sample. Hide it until we have enough.
 const MIN_REAL_GAMES = 10
@@ -27,7 +29,10 @@ function bdlStatValue(league, g, propLabel) {
   const p = String(propLabel || '').toLowerCase()
   if (p.includes('fantasy') || /\bfs\b/.test(p)) return null // weighted formula we can't verify; skip, don't fake
 
-  if (league === 'WNBA') {
+  // NBA and WNBA box scores share the same field names.
+  if (league === 'WNBA' || league === 'NBA') {
+    // Partial-game props can't be measured from a full-game box score.
+    if (/\b(1st|2nd|first|second)\s*(quarter|half|qtr)\b|\b(1q|2q|3q|4q|1h|2h)\b/.test(p)) return null
     const pts = +g.pts || 0, reb = +g.reb || 0, ast = +g.ast || 0
     const stl = +g.stl || 0, blk = +g.blk || 0
     const oreb = +g.oreb || 0, dreb = +g.dreb || 0
@@ -202,7 +207,13 @@ export default function PickCard({ pick, delay = 0, selected = false, onTogglePa
   const league = (pick.league || pick.sport || '').toUpperCase()
   const lc = LEAGUE_COLORS[league] || { bg: 'rgba(255,255,255,0.06)', color: '#7a8aaa', border: 'rgba(255,255,255,0.1)' }
   const isGold = t === 'gold'
-  const hasRealData = REAL_DATA_LEAGUES.includes(league)
+  const [realLeagues, setRealLeagues] = useState([])
+  useEffect(() => {
+    let alive = true
+    getFeedStatus().then(f => { if (alive) setRealLeagues(f.realLeagues) })
+    return () => { alive = false }
+  }, [])
+  const hasRealData = realLeagues.includes(league)
 
   // real game log (MLB / WNBA only)
   const [gamelog, setGamelog] = useState(null)
@@ -270,6 +281,13 @@ export default function PickCard({ pick, delay = 0, selected = false, onTogglePa
   // line / mapCount. Ball sports compare against the line directly.
   const effLine = isEsport ? (parseFloat(pick.val) / mapCount) : pick.val
   const real = useMemo(() => rateFor(effLine), [gameVals, effLine, up])
+  // Only claim real data when there is a real sample behind it.
+  const realVerified = hasRealData && !!real && real.total >= MIN_REAL_GAMES
+  // Show the real-data panel while loading or when a log actually came back
+  // for this stat. Feed off, player not found, or an unmappable stat all fall
+  // back to the normal recent-form note instead of a "no data" message.
+  const showRealPanel = hasRealData && (glState === 'idle' || glState === 'loading' || (glState === 'done' && !!real))
+  const spansSeasons = !!(gamelog && gamelog.spansSeasons)
 
   const pctColor = real ? (real.pct >= 66 ? '#15d68f' : real.pct >= 40 ? '#f5c842' : '#ef4444') : '#7a8aaa'
 
@@ -388,8 +406,8 @@ export default function PickCard({ pick, delay = 0, selected = false, onTogglePa
             background: lc.bg, color: lc.color, border: `1px solid ${lc.border}`
           }}>{league || pick.sport}</div>
 
-          {/* Real-data flag on the image, for MLB / WNBA */}
-          {hasRealData && (
+          {/* Real-data flag on the image, only when a verified sample backs it */}
+          {realVerified && (
             <div style={{
               position: 'absolute', top: '8px', left: '8px',
               display: 'inline-flex', alignItems: 'center', gap: '3px',
@@ -445,7 +463,7 @@ export default function PickCard({ pick, delay = 0, selected = false, onTogglePa
           )}
 
           {/* Real data panel (MLB / WNBA) replaces the AI record badge */}
-          {hasRealData ? (
+          {showRealPanel ? (
             <div style={{ marginTop: '6px', marginBottom: '6px' }}>
               {real && real.total >= MIN_REAL_GAMES ? (
                 <div style={{
@@ -466,10 +484,10 @@ export default function PickCard({ pick, delay = 0, selected = false, onTogglePa
                   <div style={{ fontSize: '8px', color: 'rgba(255,170,130,0.6)', marginTop: '5px', letterSpacing: '0.4px' }}>
                     {isEsport
                       ? `Last ${real.total} maps · per-map pace vs ${pick.val}${mapCount > 1 ? ` (${mapCount} maps)` : ''} · BALLDONTLIE`
-                      : `Last ${real.total} games vs ${pick.val} · verified by BALLDONTLIE`}
+                      : `Last ${real.total} games${spansSeasons ? ' (incl. last season)' : ''} vs ${pick.val} · verified by BALLDONTLIE`}
                   </div>
                 </div>
-              ) : glState === 'loading' ? (
+              ) : (glState === 'loading' || glState === 'idle') ? (
                 <div style={{ fontSize: '10px', color: '#ff8a4c', fontFamily: "'Barlow Condensed',sans-serif", display: 'flex', alignItems: 'center', gap: '6px', padding: '2px 0' }}>
                   <span style={{ fontSize: '10px', animation: 'spin 1s linear infinite', display: 'inline-block' }}>⟳</span> Loading real game data
                 </div>
@@ -477,11 +495,7 @@ export default function PickCard({ pick, delay = 0, selected = false, onTogglePa
                 <div style={{ fontSize: '10px', color: '#7a8aaa', fontFamily: "'Barlow Condensed',sans-serif", padding: '2px 0' }}>
                   Not enough game history yet ({real.total} of {MIN_REAL_GAMES} needed)
                 </div>
-              ) : (
-                <div style={{ fontSize: '10px', color: '#7a8aaa', fontFamily: "'Barlow Condensed',sans-serif", padding: '2px 0' }}>
-                  No real game data for this stat yet
-                </div>
-              )}
+              ) : null}
             </div>
           ) : (
             pick.record && (
@@ -579,7 +593,7 @@ export default function PickCard({ pick, delay = 0, selected = false, onTogglePa
           <div style={{ padding: '12px 13px', borderTop: `1px solid ${isGold ? 'rgba(255,60,0,0.12)' : 'rgba(255,255,255,0.06)'}`, background: isGold ? '#130800' : '#0c1018' }}>
 
             {/* Real recent games (MLB / WNBA) */}
-            {hasRealData && real && real.total >= MIN_REAL_GAMES && (
+            {realVerified && (
               <div style={{ marginBottom: '12px' }}>
                 <div style={{ fontSize: '9px', color: '#ff8a4c', textTransform: 'uppercase', letterSpacing: '1.5px', marginBottom: '6px', fontFamily: "'Barlow Condensed',sans-serif", fontWeight: 600 }}>
                   🔥 Recent {isEsport ? 'maps' : 'games'} · {real.cleared}/{real.total} cleared {isEsport ? `${(parseFloat(pick.val) / mapCount).toFixed(1)}/map` : pick.val}

@@ -13,7 +13,7 @@ export default function Chat() {
   useEffect(() => {
     setMessages([{
       role: 'ai',
-      text: `Welcome to **Trip Predicts** — your AI prop pick analyst.\n\nHere's what I can do:\n• **Analyze any pick** — ask about a player or line and I'll break it down with confidence, bull case, and bear case\n• **Build lineups** — say "give me a 6 man" and I'll find the strongest picks tonight across sports and esports\n• **Gold picks** — ask for only the elite 90%+ confidence plays\n• **Mixed slates** — I pull from NBA, WNBA, NFL, MLB, CS2, LoL, Valorant, and more\n\nWhat do you want to hit tonight?`
+      text: `Welcome to **Trip Predicts** — your AI prop pick analyst.\n\nHere's what I can do:\n• **Analyze any pick** — ask about a player or line and I'll break it down with confidence, bull case, and bear case\n• **Build lineups** — say "give me a 6 man" and I'll find the strongest picks tonight across sports and esports\n• **Gold picks** — ask for only the elite 90%+ confidence plays\n• **Mixed slates** — I pull from NBA, NFL, college football, NHL, CS2, LoL, Valorant, and more\n\nWhat do you want to hit tonight?`
     }])
   }, [])
 
