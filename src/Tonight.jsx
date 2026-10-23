@@ -144,6 +144,8 @@ export default function Tonight() {
   const [realLeagues, setRealLeagues] = useState([])
   const [selectedLeague, setSelectedLeague] = useState('ALL')
   const [picksCache, setPicksCache] = useState({})
+  // Server warnings per league, e.g. a sport whose AI picks could not load.
+  const [warningsCache, setWarningsCache] = useState({})
   const [loadingLeague, setLoadingLeague] = useState(null)
   const [linesLoading, setLinesLoading] = useState(true)
   const [goldFilter, setGoldFilter] = useState('all')
@@ -229,6 +231,7 @@ export default function Tonight() {
       setProgress(100)
       await new Promise(r => setTimeout(r, 300))
       setPicksCache(prev => ({ ...prev, [league]: data.picks }))
+      setWarningsCache(prev => ({ ...prev, [league]: data.warnings || [] }))
     } catch (e) {
       setError(e.message || 'Could not load picks.')
       setPicksCache(prev => ({ ...prev, [league]: [] }))
@@ -251,6 +254,7 @@ export default function Tonight() {
 
   const isLoading = linesLoading || loadingLeague === selectedLeague
   const currentPicks = picksCache[selectedLeague] || []
+  const currentWarnings = warningsCache[selectedLeague] || []
   const goldPicks = currentPicks.filter(p => p.conf >= 90)
   const highPicks = currentPicks.filter(p => p.conf >= 75 && p.conf < 90)
   const regularPicks = currentPicks.filter(p => p.conf < 75)
@@ -321,6 +325,12 @@ export default function Tonight() {
           </div>
         </div>
       )}
+
+      {!isLoading && currentWarnings.map((w, i) => (
+        <div key={i} style={{ margin: '12px 20px 0', padding: '10px 14px', borderRadius: '10px', border: '1px solid rgba(255,170,0,0.35)', background: 'rgba(255,170,0,0.07)', fontSize: '12px', color: '#ffca5f', lineHeight: 1.5, flexShrink: 0 }}>
+          ⚠ {w}
+        </div>
+      ))}
 
       {!isLoading && currentPicks.length > 0 && (
         <div style={{ padding: '12px 20px 0', display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 }}>

@@ -1757,6 +1757,18 @@ const BASKETBALL_PICK_RULES = `BASKETBALL RULES (NBA first, also WNBA and colleg
 - Prefer volume props with stable minutes (points, rebounds, assists, combos, made threes for high-volume shooters) over steals, blocks, and turnovers, which swing on a few plays.
 - Early in the season, last season's role may not match this season's. Weight recent games, roster changes, and new teams heavily.
 - Basketball lines move with the injury report. A line cleared in nearly every recent game is usually already priced in.`
+// An empty pick list that remembers WHY it is empty.
+function aiFailure(reason) {
+  const arr = []
+  arr.aiFailed = reason
+  return arr
+}
+// Turn a board's AI failures into one plain warning for the frontend.
+function aiFailureWarning(failures) {
+  if (!failures.length) return null
+  const leagues = [...new Set(failures.map(f => f.lg))].join(', ')
+  return `Picks for ${leagues} could not load: ${failures[0].reason}. Those sports will come back on refresh once that clears.`
+}
 // AI pick generation. Covers every league without an active real-data feed,
 // focus sport first.
 async function aiPicks(currentTime, lines, league, rawLines, mode, pickCount) {
@@ -1815,14 +1827,25 @@ ${recordRule}
     system: `You are a PrizePicks prop analyst. Output ONLY a valid JSON array. No text before or after. Start with [ end with ].`,
     messages: [{ role: 'user', content: gold ? goldBody : tonightBody }]
   })
-  if (!data || !data.content) { console.error('aiPicks got no content for', league || 'ALL'); return [] }
+  // A failed AI call used to return a plain [] that looked exactly like "no
+  // good picks in this league". With NBA picks coming from the real-data
+  // scanner (no AI needed), an AI outage then left an NBA-only board with no
+  // explanation. Failures now come back as an empty array tagged with the
+  // reason, so the board builders can report it and refuse to cache it.
+  if (!data || !data.content) {
+    const reason = overBudget()
+      ? `daily AI budget of $${DAILY_API_BUDGET} is spent (resets at 8 PM ET, raise DAILY_API_BUDGET in Railway)`
+      : `AI service error: ${(data && data.error && (data.error.message || data.error.type)) || 'no response'}`
+    console.error('aiPicks failed for', league || 'ALL', '-', reason)
+    return aiFailure(reason)
+  }
   const textBlock = data.content.find(b => b.type === 'text')
-  if (!textBlock) return []
+  if (!textBlock) return aiFailure('AI returned no text')
   const start = textBlock.text.indexOf('[')
   const end = textBlock.text.lastIndexOf(']')
-  if (start === -1 || end === -1) return []
+  if (start === -1 || end === -1) return aiFailure('AI response had no picks list')
   let parsed
-  try { parsed = JSON.parse(textBlock.text.slice(start, end + 1)) } catch (e) { return [] }
+  try { parsed = JSON.parse(textBlock.text.slice(start, end + 1)) } catch (e) { return aiFailure('AI response could not be read') }
   const grounded = await groundPicks(validateLines(dedupe(normalizePicks(parsed)), rawLines))
   // The model emits ids 1..N per call, which collides across the parallel
   // per-league calls and breaks parlay toggling and React keys. Rebuild every
@@ -1850,6 +1873,7 @@ async function buildPicksBoard({ currentTime, rawLines, league, count, picksKey 
     const lines = sortLines(rawLines, league)
     const pickCount = Math.min(count || 6, 10, lines.length)
     const REAL = realDataLeagues()
+    const aiFailures = [] // { lg, reason } for every league whose AI call failed
     console.log('Analyzing', lines?.length, 'lines for league:', league || 'ALL', REAL.length ? `(real data: ${REAL.join(', ')})` : '(BDL off, AI for every league)')
     if (!lines || lines.length === 0) throw new Error('No lines provided')
     const reqLeague = league ? league.toUpperCase() : null
@@ -1866,6 +1890,7 @@ async function buildPicksBoard({ currentTime, rawLines, league, count, picksKey 
       const lgLines = rawLines.filter(l => (l.league || '').toUpperCase() === lg).slice(0, aiLineCapFor(lg))
       if (!lgLines.length) return []
       const lgAI = await aiPicks(currentTime, lgLines, lg, rawLines, 'tonight', pickCount)
+      if (lgAI.aiFailed) aiFailures.push({ lg, reason: lgAI.aiFailed })
       console.log(lg, 'real scanner empty — AI fallback, got', lgAI.length, 'picks')
       return lgAI
     }))
@@ -1879,6 +1904,7 @@ async function buildPicksBoard({ currentTime, rawLines, league, count, picksKey 
     await mapLimit(aiLeagues, 3, async lg => {
       const lgLines = rawLines.filter(l => (l.league || '').toUpperCase() === lg).slice(0, aiLineCapFor(lg))
       const arr = await aiPicks(currentTime, lgLines, lg, rawLines, 'tonight', aiPickCountFor(lg, pickCount))
+      if (arr.aiFailed) aiFailures.push({ lg, reason: arr.aiFailed })
       aiResults.push(...arr)
     })
     picks = picks.concat(aiResults)
@@ -1887,15 +1913,27 @@ async function buildPicksBoard({ currentTime, rawLines, league, count, picksKey 
     picks.sort(focusFirst)
     picks = picks.slice(0, 40)
     console.log('Got', picks.length, 'picks (', picks.filter(p => isFocus(p.league)).length, SEASON_FOCUS_LABEL + ',', picks.filter(p => isFootball(p.league)).length, 'football,', picks.filter(p => REAL.includes(p.league)).length, 'real,', picks.filter(p => p.trapRisk).length, 'flagged trap )')
-    if (picks.length > 0) picksCache[picksKey] = { data: { picks }, ts: Date.now() }
-    return { picks }
+    // A board with missing sports is never cached. It used to be: NBA picks
+    // from the real-data scanner (no AI) kept the board non-empty while every
+    // AI league failed, and that NBA-only board was then served for 45
+    // minutes even after the AI came back.
+    // Incomplete boards cache for only 5 minutes, same circuit breaker the gold
+    // board uses: long enough that an outage can't fire the full AI fan-out on
+    // every page load, short enough that the missing sports come back fast.
+    const warning = aiFailureWarning(aiFailures)
+    if (warning) console.error('Picks board incomplete, short cache:', warning)
+    const payload = { picks, warnings: warning ? [warning] : [] }
+    if (picks.length > 0) picksCache[picksKey] = warning
+      ? { data: payload, ts: Date.now(), ttl: 5 * 60 * 1000 }
+      : { data: payload, ts: Date.now() }
+    return payload
 }
 app.post('/picks', async (req, res) => {
   try {
     const { currentTime, lines: rawLines, league, count = 6 } = req.body
     const picksKey = (league || 'ALL').toUpperCase()
     const pc = picksCache[picksKey]
-    if (pc && Date.now() - pc.ts < PICKS_CACHE_TTL) {
+    if (pc && Date.now() - pc.ts < (pc.ttl || PICKS_CACHE_TTL)) {
       console.log('Serving picks from cache for', picksKey)
       return res.json(pc.data)
     }
@@ -1919,6 +1957,7 @@ async function buildGoldBoard({ currentTime, rawLines, league, goldKey }) {
     if (!lines || lines.length === 0) throw new Error('No lines provided')
     const reqLeague = league ? league.toUpperCase() : null
     let picks = []
+    const aiFailures = [] // { lg, reason } for every league whose AI call failed
     // Gold from real data: strongest verified plays, gold-eligible only. That
     // means no trap flags, projection must agree with the streak side, and the
     // player must have appeared recently. All real leagues scan in parallel.
@@ -1934,6 +1973,7 @@ async function buildGoldBoard({ currentTime, rawLines, league, goldKey }) {
       const lgLines = rawLines.filter(l => (l.league || '').toUpperCase() === lg).slice(0, aiLineCapFor(lg))
       if (!lgLines.length) return []
       const lgAI = await aiPicks(currentTime, lgLines, lg, rawLines, 'gold')
+      if (lgAI.aiFailed) aiFailures.push({ lg, reason: lgAI.aiFailed })
       console.log(lg, 'real scanner empty — AI gold fallback, got', lgAI.length, 'picks')
       return lgAI.filter(p => p.conf >= floor)
     }))
@@ -1945,6 +1985,7 @@ async function buildGoldBoard({ currentTime, rawLines, league, goldKey }) {
     await mapLimit(aiLeagues, 3, async lg => {
       const lgLines = rawLines.filter(l => (l.league || '').toUpperCase() === lg).slice(0, aiLineCapFor(lg))
       const aiGold = await aiPicks(currentTime, lgLines, lg, rawLines, 'gold')
+      if (aiGold.aiFailed) aiFailures.push({ lg, reason: aiGold.aiFailed })
       aiResults.push(...aiGold.filter(p => p.conf >= goldFloorFor(lg)))
     })
     picks = picks.concat(aiResults)
@@ -1996,6 +2037,8 @@ async function buildGoldBoard({ currentTime, rawLines, league, goldKey }) {
     // Make analyst failures visible instead of silent.
     const warnings = []
     const analyzedAny = picks.some(p => ['CONFIRMED', 'NO_NEWS', 'CAUTION'].includes(p.analysisStatus))
+    const aiWarning = aiFailureWarning(aiFailures)
+    if (aiWarning) warnings.push(aiWarning)
     if (picks.length > 0 && !analyzedAny) {
       warnings.push('The analyst could not run on this load (AI service unavailable). Statuses and slips are unverified. Check Railway logs for the Anthropic error.')
     }
@@ -2015,7 +2058,7 @@ async function buildGoldBoard({ currentTime, rawLines, league, goldKey }) {
     // outage costs one pipeline run per 5 minutes instead of one per page
     // load (that pattern is exactly how a day of retries drains a credit
     // balance), short enough that recovery is picked up quickly.
-    if (picks.length > 0 && analyzedAny) {
+    if (picks.length > 0 && analyzedAny && !aiWarning) {
       goldCache[goldKey] = { data: payload, ts: Date.now() }
     } else {
       goldCache[goldKey] = { data: payload, ts: Date.now(), ttl: 5 * 60 * 1000 }

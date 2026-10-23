@@ -494,11 +494,11 @@ function GoldContent() {
       {!isLoading && !error && currentPicks.length > 0 && (
         <div style={{ flex: 1, overflowY: 'auto', padding: `14px 20px ${parlayPicks.length > 0 ? '76px' : '24px'}` }}>
 
-          {currentWarnings.length > 0 && (
-            <div style={{ marginBottom: '14px', padding: '10px 14px', borderRadius: '10px', border: '1px solid rgba(255,170,0,0.35)', background: 'rgba(255,170,0,0.07)', fontSize: '12px', color: '#ffca5f', lineHeight: 1.5 }}>
-              ⚠ {currentWarnings[0]}
+          {currentWarnings.map((w, i) => (
+            <div key={i} style={{ marginBottom: '14px', padding: '10px 14px', borderRadius: '10px', border: '1px solid rgba(255,170,0,0.35)', background: 'rgba(255,170,0,0.07)', fontSize: '12px', color: '#ffca5f', lineHeight: 1.5 }}>
+              ⚠ {w}
             </div>
-          )}
+          ))}
 
           {currentPairs.length > 0 && (
             <div style={{ marginBottom: '22px' }}>
